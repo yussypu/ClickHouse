@@ -13,6 +13,10 @@
 --   1 -> deferred pruning, correctness-safe (default; 26.3+ behavior)
 --   0 -> pre-26.3 pruning before FINAL, valid when same-PK rows cannot span partitions
 
+-- The "default-defer" queries below rely on the default; pin it so the randomizer's value
+-- does not leak in. The "opt-out" queries set it to 0 per-query, which still overrides this.
+SET defer_partition_pruning_after_final = 1;
+
 DROP TABLE IF EXISTS repro_104263 SYNC;
 
 CREATE TABLE repro_104263

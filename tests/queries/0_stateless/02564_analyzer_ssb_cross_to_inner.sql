@@ -1,4 +1,6 @@
 SET enable_analyzer = 1;
+-- Keep EXPLAIN QUERY TREE node IDs deterministic (resolve cache shares alias nodes).
+SET enable_identifier_resolve_cache = 1;
 SET optimize_time_filter_with_preimage = 1;
 SET optimize_move_to_prewhere = 1, query_plan_optimize_prewhere = 1;
 SET optimize_extract_common_expressions = 0;

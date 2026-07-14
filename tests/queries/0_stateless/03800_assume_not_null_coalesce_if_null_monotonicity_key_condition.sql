@@ -3,6 +3,8 @@
 -- no-parallel-replicas: EXPLAIN output differs for parallel replicas.
 
 SET explain_query_plan_default = 'legacy';
+-- The EXPLAIN below shows the coalesce/ifNull key-condition rewrite, so pin it on.
+SET allow_key_condition_coalesce_rewrite = 1;
 
 -- { echoOn }
 

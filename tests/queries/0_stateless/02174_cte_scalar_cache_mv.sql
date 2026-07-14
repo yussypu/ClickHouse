@@ -1,4 +1,6 @@
 -- TEST CACHE
+-- Pin the resolve cache: it shares alias nodes, so randomizing it perturbs the scalar-subquery cache ProfileEvents this test asserts on.
+SET enable_identifier_resolve_cache = 1;
 CREATE TABLE t1 (i Int64, j Int64) ENGINE = Memory;
 INSERT INTO t1 SELECT number, number FROM system.numbers LIMIT 100;
 CREATE TABLE t2 (k Int64, l Int64, m Int64, n Int64) ENGINE = Memory;
