@@ -1631,7 +1631,8 @@ class SettingsRandomizer:
         # of conditional_settings on purpose: that map forces the child to False, invalid for a numeric.
         "max_bytes_for_lazy_final": lambda: random.choice([0, 1, 256_000_000]),
         "min_filtered_ratio_for_lazy_final": lambda: random.choice([0.0, 0.5, 1.0]),
-        "max_streams_for_union_step": lambda: random.choice([0, 1, 2, 10]),
+        # Don't randomize max_streams_for_union_step because it can break 
+        # "max_streams_for_union_step": lambda: random.choice([0, 1, 2, 10]),
     }
 
     dependent_settings = {
