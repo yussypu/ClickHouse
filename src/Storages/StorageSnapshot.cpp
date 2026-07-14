@@ -1,8 +1,14 @@
-#include <Compression/CompressionFactory.h>
-#include <Compression/ICompressionCodec.h>
 #include <Storages/StorageSnapshot.h>
 #include <Storages/StorageInMemoryMetadata.h>
 #include <Storages/IStorage.h>
+
+#include <Analyzer/TableExpressionModifiers.h>
+
+#include <Compression/CompressionFactory.h>
+#include <Compression/ICompressionCodec.h>
+
+#include <Core/Streaming/StreamingVirtualColumns.h>
+
 #include <Common/quoteString.h>
 
 #include <base/StringViewHash.h>
@@ -19,6 +25,31 @@ namespace ErrorCodes
     extern const int COLUMN_QUERIED_MORE_THAN_ONCE;
 }
 
+namespace
+{
+
+StorageMetadataPtr extendMetadataWithModifiers(const StorageMetadataPtr & metadata, const TableExpressionModifiers & modifiers)
+{
+    if (!modifiers.hasStream())
+        return metadata;
+
+    const auto & stream_settings = modifiers.getStreamingSettings();
+    if (!stream_settings->watermark)
+        return metadata;
+
+    auto column = metadata->getColumns().tryGetColumn(GetColumnsOptions::AllPhysical, stream_settings->watermark->column);
+    if (!column)
+        return metadata;
+
+    auto extended = std::make_shared<StorageInMemoryMetadata>(*metadata);
+    extended->virtuals.addEphemeral(std::string(TimeAttributeColumn::name), column->type, "Event-time value of the current row.", VirtualsMaterializationPlace::Streaming);
+    extended->virtuals.addEphemeral(std::string(WatermarkColumn::name), column->type, "Running watermark in effect for the current row.", VirtualsMaterializationPlace::Streaming);
+    return extended;
+}
+
+}
+
+
 StorageSnapshot::StorageSnapshot(
     const IStorage & storage_,
     StorageMetadataPtr metadata_)
@@ -34,6 +65,15 @@ StorageSnapshot::StorageSnapshot(
     : storage(storage_)
     , metadata(std::move(metadata_))
     , data(std::move(data_))
+{
+}
+
+StorageSnapshot::StorageSnapshot(
+    std::shared_ptr<StorageSnapshot> && snapshot,
+    const TableExpressionModifiers & modifiers)
+    : storage(snapshot->storage)
+    , metadata(extendMetadataWithModifiers(snapshot->metadata, modifiers))
+    , data(std::move(snapshot->data))
 {
 }
 

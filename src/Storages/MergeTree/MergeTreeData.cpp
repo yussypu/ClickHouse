@@ -17,7 +17,6 @@
 #endif
 #include <AggregateFunctions/AggregateFunctionCount.h>
 #include <Analyzer/QueryTreeBuilder.h>
-#include <Analyzer/TableExpressionModifiers.h>
 #include <Analyzer/Utils.h>
 #include <Backups/BackupEntriesCollector.h>
 #include <Backups/BackupEntryWrappedWith.h>
@@ -27,7 +26,6 @@
 #include <Columns/ColumnConst.h>
 #include <Compression/CompressedReadBuffer.h>
 #include <Compression/CompressionFactory.h>
-#include <Core/Streaming/StreamingVirtualColumns.h>
 #include <Core/BackgroundSchedulePool.h>
 #include <Core/QueryProcessingStage.h>
 #include <Core/ServerSettings.h>
@@ -11372,46 +11370,7 @@ MergeTreeSettingsPtr MergeTreeData::getSettings(const SettingsChanges * settings
     return data_settings;
 }
 
-namespace
-{
-
-void addWatermarkVirtuals(
-    VirtualColumnsDescription & dest,
-    const StreamingSettings & settings,
-    const ColumnsDescription & base_columns)
-{
-    auto column = base_columns.tryGetColumn(GetColumnsOptions::AllPhysical, settings.watermark->column);
-    if (!column)
-        return;
-
-    dest.addEphemeral(std::string(TimeAttributeColumn::name), column->type, "Event-time value of the current row.", VirtualsMaterializationPlace::Streaming);
-    dest.addEphemeral(std::string(WatermarkColumn::name), column->type, "Running watermark in effect for the current row.", VirtualsMaterializationPlace::Streaming);
-}
-
-StorageMetadataPtr extendMetadataWithModifierVirtuals(
-    const StorageMetadataPtr & base,
-    const TableExpressionModifiers * modifiers)
-{
-    if (!modifiers || !base)
-        return base;
-
-    auto extended = std::make_shared<StorageInMemoryMetadata>(*base);
-
-    if (modifiers->hasStream())
-    {
-        const auto & stream = modifiers->getStreamingSettings();
-
-        if (stream->watermark)
-            addWatermarkVirtuals(extended->virtuals, *stream, base->getColumns());
-    }
-
-    return extended;
-}
-
-}
-
-/// NOLINTNEXTLINE(google-default-arguments)
-StorageMetadataHandle MergeTreeData::getInMemoryMetadataPtr(ContextPtr query_context, bool bypass_metadata_cache, const TableExpressionModifiers * modifiers) const
+StorageMetadataHandle MergeTreeData::getInMemoryMetadataPtr(ContextPtr query_context, bool bypass_metadata_cache) const
 {
     auto base = [&]() -> StorageMetadataHandle
     {
@@ -11435,9 +11394,9 @@ StorageMetadataHandle MergeTreeData::getInMemoryMetadataPtr(ContextPtr query_con
 
     /// Let's return copy of storage metadata to catch lifetime bugs where reference to underlying metadata field was stored without pointer to metadata.
 #if defined(DEBUG_OR_SANITIZER_BUILD)
-    return extendMetadataWithModifierVirtuals(std::make_shared<StorageInMemoryMetadata>(*base), modifiers);
+    return std::make_shared<StorageInMemoryMetadata>(*base);
 #else
-    return extendMetadataWithModifierVirtuals(base, modifiers);
+    return base;
 #endif
 }
 

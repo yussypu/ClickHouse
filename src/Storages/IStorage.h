@@ -38,7 +38,6 @@ struct Settings;
 class AlterCommands;
 class MutationCommands;
 struct PartitionCommand;
-class TableExpressionModifiers;
 using PartitionCommands = std::vector<PartitionCommand>;
 
 class IProcessor;
@@ -210,11 +209,7 @@ public:
     /// used without any locks.
     /// Pass query context to enable metadata caching in MergeTree.
     /// Pass nullptr when no query context is available.
-    /// NOLINTNEXTLINE(google-default-arguments)
-    virtual StorageMetadataHandle getInMemoryMetadataPtr(
-        ContextPtr /*context*/,
-        bool /*bypass_metadata_cache*/,
-        const TableExpressionModifiers * /*modifiers*/ = nullptr) const
+    virtual StorageMetadataHandle getInMemoryMetadataPtr(ContextPtr /*context*/, bool /*bypass_metadata_cache*/) const
     {
         return metadata.get();
     }

@@ -118,9 +118,19 @@ void TableNode::updateStorage(StoragePtr storage_value, const ContextPtr & conte
     storage_id = storage->getStorageID();
     storage_lock = storage->lockForShare(context->getInitialQueryId(), context->getSettingsRef()[Setting::lock_acquire_timeout]);
 
-    const TableExpressionModifiers * modifiers = table_expression_modifiers ? &*table_expression_modifiers : nullptr;
-    const auto metadata_snapshot = storage->getInMemoryMetadataPtr(context, false, modifiers);
+    const auto metadata_snapshot = storage->getInMemoryMetadataPtr(context, false);
     storage_snapshot = storage->getStorageSnapshot(metadata_snapshot, context);
+
+    if (table_expression_modifiers)
+        storage_snapshot = std::make_shared<StorageSnapshot>(std::move(storage_snapshot), *table_expression_modifiers);
+}
+
+void TableNode::setTableExpressionModifiers(TableExpressionModifiers table_expression_modifiers_value)
+{
+    table_expression_modifiers = std::move(table_expression_modifiers_value);
+
+    if (storage_snapshot)
+        storage_snapshot = std::make_shared<StorageSnapshot>(std::move(storage_snapshot), *table_expression_modifiers);
 }
 
 void TableNode::dumpTreeImpl(WriteBuffer & buffer, FormatState & format_state, size_t indent) const
