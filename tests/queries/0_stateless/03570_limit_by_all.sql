@@ -2,8 +2,6 @@ SET max_threads = 1;
 SET max_insert_threads = 1;
 SET max_block_size = 65536;
 SET allow_experimental_analyzer = 1;
--- Keep EXPLAIN QUERY TREE node IDs deterministic (resolve cache shares alias nodes).
-SET enable_identifier_resolve_cache = 1;
 
 DROP TABLE IF EXISTS test_limit_by_all;
 

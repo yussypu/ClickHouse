@@ -1,6 +1,4 @@
 SET enable_analyzer = 1;
--- Pin the resolve cache: it shares alias nodes, so randomizing it renumbers the EXPLAIN QUERY TREE node IDs this test prints.
-SET enable_identifier_resolve_cache = 1;
 
 DROP TABLE IF EXISTS test_table;
 CREATE TABLE test_table
