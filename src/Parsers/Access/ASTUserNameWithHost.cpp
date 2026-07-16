@@ -45,6 +45,7 @@ void ASTUserNameWithHost::replace(const String name)
     host_pattern.reset();
 
     username = make_intrusive<ASTIdentifier>(name);
+    username_was_query_parameter = false;
     children.emplace_back(username);
 }
 
@@ -58,6 +59,9 @@ ASTUserNameWithHost::ASTUserNameWithHost(ASTPtr && name_, String && host_pattern
 {
     username = std::move(name_);
     children.emplace_back(username);
+
+    if (const auto * identifier = username->as<ASTIdentifier>())
+        username_was_query_parameter = identifier->isParam();
 
     if (!host_pattern_.empty() && host_pattern_ != "%")
     {
