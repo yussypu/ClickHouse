@@ -1715,7 +1715,8 @@ class SettingsRandomizer:
         # Gated by query_plan_optimize_lazy_final (randomized above); inert when it is off. Kept out
         # of conditional_settings on purpose: that map forces the child to False, invalid for a numeric.
         "max_bytes_for_lazy_final": lambda: random.choice([0, 1, 256_000_000]),
-        "min_filtered_ratio_for_lazy_final": lambda: random.choice([0.0, 0.5, 1.0]),
+        # https://github.com/ClickHouse/ClickHouse/issues/112332
+        # "min_filtered_ratio_for_lazy_final": lambda: random.choice([0.5, 1.0]),
         "enable_parallel_single_level_merge": lambda: random.random() > 0.05,
         "query_plan_short_circuit_constant_false_join": lambda: random.random() > 0.05,
         # 0 always builds the runtime filter, a huge value never does
