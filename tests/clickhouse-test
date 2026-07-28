@@ -1705,13 +1705,23 @@ class SettingsRandomizer:
         "use_parquet_metadata_cache": lambda: random.randint(0, 1),
         "defer_partition_pruning_after_final": lambda: random.random() > 0.05,
         "allow_key_condition_coalesce_rewrite": lambda: random.random() > 0.05,
-        "use_constant_folding_in_index_analysis": lambda: random.random() < 0.5,
+        # Don't randomize use_constant_folding_in_index_analysis: with it on, a PK column that is
+        # also a modulo partition-key input gets an unsafe per-part min-max prune, silently dropping
+        # valid rows (01870_modulo_partition_key, 04149_minmax_block_number_partition_filtering), and
+        # it is also the trigger for the "Invalid partition key size" logical error of
+        # https://github.com/ClickHouse/ClickHouse/issues/109893.
+        # "use_constant_folding_in_index_analysis": lambda: random.random() < 0.5,
         "allow_aggregate_partitions_independently": lambda: random.random() > 0.05,
         # Gated by query_plan_optimize_lazy_final (randomized above); inert when it is off. Kept out
         # of conditional_settings on purpose: that map forces the child to False, invalid for a numeric.
         "max_bytes_for_lazy_final": lambda: random.choice([0, 1, 256_000_000]),
         "min_filtered_ratio_for_lazy_final": lambda: random.choice([0.0, 0.5, 1.0]),
-        # Don't randomize max_streams_for_union_step because it can break 
+        "enable_parallel_single_level_merge": lambda: random.random() > 0.05,
+        "query_plan_short_circuit_constant_false_join": lambda: random.random() > 0.05,
+        # 0 always builds the runtime filter, a huge value never does
+        "join_runtime_filter_min_probe_rows": lambda: random.choice([0, 100, 1000, 1_000_000]),
+        "use_projection_index_in_read_pools": lambda: random.random() < 0.3,
+        # Don't randomize max_streams_for_union_step because it can break
         # "max_streams_for_union_step": lambda: random.choice([0, 1, 2, 10]),
     }
 
@@ -1732,6 +1742,8 @@ class SettingsRandomizer:
         "use_statistics_cache": "use_statistics",
         # part pruning via statistics requires statistics to be enabled
         "use_statistics_for_part_pruning": "use_statistics",
+        # applying the projection index earlier is inert when the projection index is not applied
+        "use_projection_index_in_read_pools": "optimize_use_projection_filtering",
     }
 
     stress_test_only_settings = {
