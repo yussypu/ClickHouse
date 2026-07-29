@@ -1889,11 +1889,10 @@ class MergeTreeSettingsRandomizer:
         "packed_skip_index_max_bytes": lambda: random.choice(
             [0, 100, 1024, 1024 * 1024, 10 * 1024 * 1024]
         ),
-        # Wait for issue https://github.com/ClickHouse/ClickHouse/issues/106780 to be fixed
-        #"add_minmax_index_for_block_number_column": lambda: random.random() < 0.3,
-        #"add_minmax_index_for_block_offset_column": lambda: random.random() < 0.3,
+        "add_minmax_index_for_block_number_column": lambda: random.random() < 0.3,
+        "add_minmax_index_for_block_offset_column": lambda: random.random() < 0.3,
         "concurrent_part_removal_threshold_for_remote_disk": lambda: random.choice([0, 1, 16, 100]),
-        #"part_minmax_index_columns": lambda: random.choice(["partition_key_only", "with_block_number_offset"]),
+        "part_minmax_index_columns": lambda: random.choice(["partition_key_only", "with_block_number_offset"]),
     }
 
     @staticmethod
@@ -1923,9 +1922,9 @@ class MergeTreeSettingsRandomizer:
 
             random_settings[setting] = value
 
-        #if random_settings.get("part_minmax_index_columns") == "with_block_number_offset":
-        #    random_settings["enable_block_number_column"] = 1
-        #    random_settings["enable_block_offset_column"] = 1
+        if random_settings.get("part_minmax_index_columns") == "with_block_number_offset":
+            random_settings["enable_block_number_column"] = 1
+            random_settings["enable_block_offset_column"] = 1
 
         return random_settings
 
