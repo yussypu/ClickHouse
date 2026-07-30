@@ -99,7 +99,9 @@ ${CLICKHOUSE_CLIENT} --optimize_trivial_insert_select=1 --async_insert=1 --wait_
 "
 ${CLICKHOUSE_CLIENT} -q "SELECT count() FROM test_async_sel_trivial_opt"
 
-for _ in $(seq 1 60); do
+# One SYSTEM FLUSH LOGS after the insert already sees the entry (the flush appends the log element
+# before finishing the entry the query waits on); the short retry is only a safety net.
+for _ in $(seq 1 10); do
     ${CLICKHOUSE_CLIENT} -q "SYSTEM FLUSH LOGS asynchronous_insert_log"
     count=$(${CLICKHOUSE_CLIENT} -q "
         SELECT count()

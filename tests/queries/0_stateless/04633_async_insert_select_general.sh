@@ -41,8 +41,10 @@ ${CLICKHOUSE_CURL} -sS -X POST \
     "${CLICKHOUSE_URL}&async_insert=1&wait_for_async_insert=1&query=${Q}" -d ""
 ${CLICKHOUSE_CLIENT} -q "SELECT id, v FROM test_async_sel ORDER BY id"
 
-# asynchronous_insert_log can lag even after wait_for_async_insert=1; poll with bounded retry.
-for _ in $(seq 1 60); do
+# The flush appends the log element before it finishes the entry the query waits on, so one
+# SYSTEM FLUSH LOGS after the insert already sees it; the short retry is only a safety net and
+# stays short so a real failure prints a diff instead of running into the test timeout.
+for _ in $(seq 1 10); do
     ${CLICKHOUSE_CLIENT} -q "SYSTEM FLUSH LOGS asynchronous_insert_log"
     count=$(${CLICKHOUSE_CLIENT} -q "
         SELECT count()
@@ -85,7 +87,7 @@ ${CLICKHOUSE_CLIENT} --async_insert=1 --wait_for_async_insert=1 -q "
 "
 ${CLICKHOUSE_CLIENT} -q "SELECT id, v FROM test_async_sel_tcp ORDER BY id"
 
-for _ in $(seq 1 60); do
+for _ in $(seq 1 10); do
     ${CLICKHOUSE_CLIENT} -q "SYSTEM FLUSH LOGS asynchronous_insert_log"
     count=$(${CLICKHOUSE_CLIENT} -q "
         SELECT count()
