@@ -1365,7 +1365,57 @@ class JobConfigs:
             runs_on=RunnerLabels.FUNC_TESTER_AMD,
             requires=[ArtifactNames.CH_AMD_DEBUG],
         ),
-
+    )
+    lacasadeldolor_jobs = Job.Config(
+        name=JobNames.LACASADELDOLOR,
+        runs_on=[],  # from parametrize()
+        command="python3 ./ci/jobs/lacasadeldolor_job.py",
+        digest_config=Job.CacheDigestConfig(
+            include_paths=[
+                "./ci/docker/integration",
+                "./ci/jobs/ast_fuzzer_job.py",
+                "./ci/jobs/buzzhouse_job.py",
+                "./ci/jobs/lacasadeldolor_job.py",
+                "./ci/jobs/scripts/cidb_cluster.py",
+                "./ci/jobs/scripts/clickhouse_service.py",
+                "./ci/jobs/scripts/docker_in_docker.sh",
+                "./ci/jobs/scripts/integration_tests_configs.py",
+                "./ci/jobs/scripts/log_parser.py",
+                "./ci/jobs/scripts/fuzzer/",
+                "./ci/jobs/scripts/server_fuzzer/",
+                "./tests/casa_del_dolor/",
+                # Integration helpers imported by tests/casa_del_dolor — changes to these
+                # files alter the job's behavior, so they must invalidate the cache digest.
+                "./tests/integration/helpers/client.py",
+                "./tests/integration/helpers/cluster.py",
+                "./tests/integration/helpers/config_cluster.py",
+                "./tests/integration/helpers/kafka/",
+                "./tests/integration/helpers/postgres_utility.py",
+                "./tests/integration/helpers/s3_tools.py",
+            ],
+        ),
+        run_in_docker=f"clickhouse/integration-tests-runner+root+--memory={LIMITED_MEM}+--privileged+--dns-search='.'+--security-opt seccomp=unconfined+--cap-add=SYS_PTRACE+{docker_sock_mount}+--volume=clickhouse_integration_tests_volume:/var/lib/docker+--cgroupns=host",
+    ).parametrize(
+        Job.ParamSet(
+            parameter="amd_debug",
+            runs_on=RunnerLabels.AMD_MEDIUM,
+            requires=[ArtifactNames.CH_AMD_DEBUG],
+        ),
+        Job.ParamSet(
+            parameter="arm_asan_ubsan",
+            runs_on=RunnerLabels.ARM_MEDIUM,
+            requires=[ArtifactNames.CH_ARM_ASAN_UBSAN],
+        ),
+        Job.ParamSet(
+            parameter="amd_tsan",
+            runs_on=RunnerLabels.AMD_MEDIUM,
+            requires=[ArtifactNames.CH_AMD_TSAN],
+        ),
+        Job.ParamSet(
+            parameter="amd_msan",
+            runs_on=RunnerLabels.AMD_MEDIUM,
+            requires=[ArtifactNames.CH_AMD_MSAN],
+        ),
     )
     buzz_fuzzer_jobs = Job.Config(
         name=JobNames.BUZZHOUSE,

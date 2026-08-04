@@ -252,189 +252,101 @@ def get_run_command(
     )
 
 
-def _collect_targeted_queries(info: Info) -> tuple[list[str], Result]:
-    targeter = Targeting(info=info)
-    targeter.job_type = Targeting.STATELESS_JOB_TYPE
+def _classify_sanitizer_oom(
+    primary_server_logs: list[Path],
+    stderr_logs: list[Path],
+    server_died: bool,
+    server_exit_code: int,
+    workspace_path: Path,
+) -> tuple[bool, list[str]]:
+    """Decide whether a failed sanitizer run is an OOM (i.e. should pass).
 
-    # Step 1: changed/new test files in this PR
-    changed_tests = targeter.get_changed_tests()
-    logging.info("[targeted-fuzzer] Step 1 — changed/new tests (%d): %s",
-                 len(changed_tests), ", ".join(sorted(changed_tests)) or "(none)")
-
-    # Step 2: tests that failed in previous CI runs for this PR
-    try:
-        previously_failed = targeter.get_previously_failed_tests()
-    except Exception as e:
-        logging.warning("[targeted-fuzzer] Step 2 — failed to fetch previously-failed tests: %s", e)
-        previously_failed = []
-    logging.info("[targeted-fuzzer] Step 2 — previously failed tests (%d): %s",
-                 len(previously_failed), ", ".join(previously_failed) or "(none)")
-
-    # Step 3: coverage-relevant tests (direct lines, indirect callees, siblings)
-    try:
-        relevant_tests, relevant_tests_result = targeter.get_most_relevant_tests()
-    except Exception as e:
-        logging.warning("[targeted-fuzzer] Step 3 — failed to fetch coverage-relevant tests: %s", e)
-        relevant_tests = []
-        relevant_tests_result = Result(name="tests found by coverage", status=Result.Status.OK, info=f"Skipped: {e}")
-    logging.info("[targeted-fuzzer] Step 3 — coverage-relevant tests (%d)", len(relevant_tests))
-
-    # Merge all three sets preserving priority order (changed first)
-    seen: set = set()
-    tests: list = []
-    for t in list(changed_tests) + list(previously_failed) + list(relevant_tests):
-        if t not in seen:
-            seen.add(t)
-            tests.append(t)
-    logging.info("[targeted-fuzzer] Total unique tests: %d", len(tests))
-
-    stateless_tests_dir = Path(cwd) / "tests/queries/0_stateless"
-    available_queries: dict[str, list[str]] = {}
-
-    for query_file in stateless_tests_dir.rglob("*.sql"):
-        base_name = query_file.stem
-        available_queries.setdefault(base_name, []).append(
-            f"/repo/{query_file.relative_to(cwd)}"
-        )
-
-    logging.debug("Indexed %d unique SQL query base names from %s", len(available_queries), stateless_tests_dir)
-
-    targeted_queries: list[str] = []
-    seen_queries = set()
-    for test in tests:
-        base_name = Path(test).stem.rstrip(".")
-        matches = available_queries.get(base_name, [])
-        if matches:
-            logging.debug("  %s -> %s", test, matches)
-        else:
-            logging.debug("  %s -> no .sql file found (stem: %r)", test, base_name)
-        for query_path in matches:
-            if query_path not in seen_queries:
-                seen_queries.add(query_path)
-                targeted_queries.append(query_path)
-
-    if targeted_queries:
-        targeted_queries_file = WORKSPACE_PATH / "ci-targeted-queries.txt"
-        with open(targeted_queries_file, "w", encoding="utf-8") as f:
-            f.write("\n".join(targeted_queries))
-        logging.info(
-            "Prepared %d targeted queries for AST fuzzer:", len(targeted_queries)
-        )
-        for qf in targeted_queries:
-            logging.info("  %s", qf)
-    else:
-        logging.info("No targeted queries resolved for AST fuzzer")
-
-    return targeted_queries, relevant_tests_result
-
-
-def run_fuzz_job(check_name: str):
-    logging.basicConfig(level=logging.INFO)
-    is_targeted = "targeted" in check_name.lower()
-    buzzhouse: bool = check_name.lower().startswith("buzzhouse")
-
-    clickhouse_binary = Path(cwd) / "ci/tmp/clickhouse"
-    assert clickhouse_binary.exists(), "ClickHouse binary not found"
-    clickhouse_binary.chmod(clickhouse_binary.stat().st_mode | 0o111)
-
-    docker_image = DockerImage.get_docker_image(IMAGE_NAME).pull_image()
-
-    WORKSPACE_PATH.mkdir(parents=True, exist_ok=True)
-
-    info = Info()
-    extra_results = []
-    targeted_queries_file: Path | None = None
-
-    if is_targeted and not buzzhouse:
-        targeted_queries, relevant_tests_result = _collect_targeted_queries(info=info)
-        extra_results.append(relevant_tests_result)
-        if not targeted_queries:
-            Result.create_from(
-                status=Result.Status.SKIPPED,
-                info="No relevant tests found for targeted AST fuzzer",
-                results=extra_results,
-            ).complete_job()
-        targeted_queries_file = WORKSPACE_PATH / "ci-targeted-queries.txt"
-
-    is_old_compatibility = "old_compatibility" in check_name.lower()
-    compatibility_setting: str | None = None
-    if not buzzhouse:
-        if is_old_compatibility:
-            # The minimum version is 24.3 because that's when enable_analyzer
-            # became enabled by default, and the fuzzer has a readonly constraint
-            # on enable_analyzer to avoid wasting cycles on the old interpreter.
-            compatibility_setting = "24.3"
-        elif is_targeted:
-            compatibility_setting = None
-        else:
-            compatibility_setting = (
-                f"{random.randint(24, 27)}.{random.randint(1, 12)}"
-            )
-        if compatibility_setting:
-            logging.info("AST fuzzer compatibility setting: %s", compatibility_setting)
-        else:
-            logging.info("AST fuzzer compatibility setting is not set")
-
-    run_command = get_run_command(
-        docker_image,
-        buzzhouse,
-        targeted_queries_file=targeted_queries_file,
-        compatibility_setting=compatibility_setting,
+    A sanitizer OOM report (e.g. "AddressSanitizer: out-of-memory") or a kernel
+    SIGKILL of the server (exit 137 with no sanitizer report written) is treated
+    as OOM, not a bug. It is only downgraded to success when no node log also
+    shows a genuine non-OOM failure signal, so a node that hits both an OOM and a
+    real crash still fails. Each node is judged by its server.log AND stderr.log
+    pair: the AST/Buzz runner merges sanitizer output into server.log, but the
+    Dolor cluster does not - there the report lands only in stderr.log.
+    Returns (is_oom_success, warning_messages).
+    """
+    # A sanitizer OOM report or a SIGKILL of the server is treated as OOM.
+    oom_pattern = (
+        "Sanitizer:? (out-of-memory|out of memory|failed to allocate)"
+        "|Child process was terminated by signal 9"
     )
-    logging.info("Going to run %s", run_command)
-
-    is_sanitized = "san" in info.job_name
-
-    changed_files_path = WORKSPACE_PATH / "ci-changed-files.txt"
-    with open(changed_files_path, "w") as f:
-        changed_files = info.get_changed_files()
-        if changed_files is None:
-            if info.is_local_run:
-                logging.warning(
-                    "No changed files available for local run - fuzzing will not be guided by changed test cases"
-                )
-            changed_files = []
-        else:
-            logging.info("Found %d changed files to guide fuzzing", len(changed_files))
-        f.write("\n".join(changed_files))
-
-    Shell.check(command=run_command, verbose=True)
-
-    # Fix file ownership after running docker as root
-    logging.info("Fuzzer: Fixing file ownership after running docker as root")
-    Utils.fix_ownership_after_docker(cwd, docker_image)
-
-    server_log, fuzzer_log, stderr_log, dmesg_log, fatal_log = JOB_ARTIFACTS
-    paths = list(JOB_ARTIFACTS)
-
-    if buzzhouse:
-        paths.extend([WORKSPACE_PATH / "fuzzerout.sql", WORKSPACE_PATH / "fuzz.json"])
-
-    # Raw sanitizer reports written via *SAN_OPTIONS=log_path (see run-fuzzer.sh).
-    # Their contents are also merged into stderr.log/server.log, but upload the
-    # originals too for debugging truncated reports.
-    paths.extend(sorted(WORKSPACE_PATH.glob("sanitizer.log.*")))
-
-    server_died = False
-    server_exit_code = 0
-    fuzzer_exit_code = 0
-    try:
-        server_died, server_exit_code, fuzzer_exit_code = _read_fuzzer_status(
-            WORKSPACE_PATH / "status.tsv"
+    # Genuine (non-OOM) failure signals. "signal 9" (SIGKILL) is excluded because
+    # it is the OOM kill signal, not a distinct crash.
+    non_oom_pattern = (
+        "AddressSanitizer|UndefinedBehaviorSanitizer|ThreadSanitizer"
+        "|MemorySanitizer|SIGSEGV|SIGABRT|signal [0-8]"
+    )
+    oom_nodes = []
+    non_oom_failure_found = False
+    # Only scan primary logs (plus each node's stderr.log). Rotated logs may
+    # contain sanitizer signals from previous restarts that would incorrectly
+    # set non_oom_failure_found and block the OOM-is-success path.
+    for i, server_log in enumerate(primary_server_logs):
+        stderr_log = stderr_logs[i] if i < len(stderr_logs) else None
+        node_logs = " ".join(
+            str(log)
+            for log in (server_log, stderr_log)
+            if log is not None and Path(log).exists()
         )
-    except Exception as e:
-        # Missing/empty status.tsv -> runner aborted before reporting (server
-        # start failure, harness error, or infra); malformed status.tsv ->
-        # harness bug. _format_status_error inlines the log tails so the abort
-        # cause is visible instead of an opaque FileNotFoundError traceback.
-        # Attach available artifacts (incl. sanitizer.log.*) so nothing is lost.
-        error_info = _format_status_error(e, paths)
-        early_result = Result.create_from(status=Result.Status.ERROR, info=error_info)
-        for file in paths:
-            if file.exists() and file.stat().st_size > 0:
-                early_result.set_files(file)
-        early_result.complete_job()
+        if not node_logs:
+            continue
+        if Shell.get_output(f"rg --text '{oom_pattern}' {node_logs}"):
+            print(f"Sanitizer OOM on server {i}")
+            oom_nodes.append(i)
+        # Run the non-OOM matcher for every node, including OOM-marked ones: a
+        # single node can hit both an OOM and a genuine crash, and the real crash
+        # must not be masked by the OOM-is-success path. Drop the OOM lines
+        # themselves (a sanitizer OOM report matches non_oom_pattern via
+        # "AddressSanitizer" etc.) so a pure OOM is not miscounted.
+        non_oom_signal = Shell.get_output(
+            f"rg --text '{non_oom_pattern}' {node_logs} | rg --text -v '{oom_pattern}'"
+        )
+        if non_oom_signal:
+            non_oom_failure_found = True
+    # Sanitizer shadow memory is invisible to the server's memory tracker, so the
+    # kernel OOM killer may SIGKILL the server (exit 137) before any limit fires.
+    # It may also kill the watchdog, losing the "terminated by signal 9" message
+    # in the server log. A SIGKILLed server with no sanitizer report is an OOM.
+    kernel_oom_kill = (
+        server_died
+        and server_exit_code == 137
+        and not any(Path(workspace_path).glob("sanitizer.log.*"))
+    )
+    if non_oom_failure_found or not (oom_nodes or kernel_oom_kill):
+        return False, []
+    messages = [
+        f"WARNING: Sanitizer OOM on server {i} - test considered passed"
+        for i in oom_nodes
+    ]
+    if kernel_oom_kill and not oom_nodes:
+        messages.append(
+            "WARNING: Server was killed by the kernel OOM killer "
+            "(sanitizer build) - test considered passed"
+        )
+    return True, messages
 
+
+def analyze_job_logs(
+    paths: list[Path],
+    server_died: bool,
+    server_exit_code: int,
+    fuzzer_exit_code: int,
+    is_sanitized: bool,
+    fuzzer_out: Path,
+    fuzzer_log: Path,
+    dmesg_log: Path,
+    server_logs: list[Path],
+    stderr_logs: list[Path],
+    fatal_logs: list[Path],
+    extra_results: list[Result],
+    sw: Utils.Stopwatch,
+    server_fuzzer: bool,
+) -> Result:
     # parse runner script exit status
     status = Result.Status.FAIL
     info = []
@@ -442,14 +354,25 @@ def run_fuzz_job(check_name: str):
     if server_died:
         # Server died - status will be determined after OOM checks
         is_failed = True
-    elif fuzzer_exit_code in (0, 137, 143):
+    elif fuzzer_exit_code in (
+        (-9, -15, -2, 0, 32, 130, 137, 143, 210) if server_fuzzer else (0, 137, 143)
+    ):
         # normal exit with timeout or OOM kill
         is_failed = False
         status = Result.Status.OK
-        if fuzzer_exit_code == 0:
-            info.append("Fuzzer exited with success")
-        elif fuzzer_exit_code == 137:
-            info.append("Fuzzer killed")
+        messages = {
+            0: "Fuzzer exited with success",
+            -2: "Fuzzer killed with SIGINT",
+            -9: "Fuzzer killed with SIGKILL",
+            -15: "Fuzzer killed with SIGTERM",
+            32: "Fuzzer exited after ATTEMPT_TO_READ_AFTER_EOF error",
+            130: "Fuzzer killed with SIGINT",
+            137: "Fuzzer killed with SIGKILL",
+            143: "Fuzzer killed with SIGTERM",
+            210: "Fuzzer exited with network timeout",
+        }
+        if fuzzer_exit_code in messages:
+            info.append(messages[fuzzer_exit_code])
         else:
             info.append("Fuzzer exited with timeout")
         info.append("\n")
@@ -488,29 +411,23 @@ def run_fuzz_job(check_name: str):
             Shell.get_output(f"tail -n200 {fuzzer_log}", verbose=False).splitlines()
         )
 
+    # server_logs = primary logs (one per node) + rotated logs appended after.
+    # stderr_logs has exactly one entry per node, so slicing by its length
+    # isolates the primary logs. This slice is used wherever per-node
+    # semantics matter (OOM detection, fatal log extraction).
+    primary_server_logs = server_logs[: len(stderr_logs)]
+
     if is_failed:
         if is_sanitized:
-            sanitizer_oom = Shell.get_output(
-                f"rg --text 'Sanitizer:? (out-of-memory|out of memory|failed to allocate)|Child process was terminated by signal 9' {server_log}"
+            is_oom_success, oom_messages = _classify_sanitizer_oom(
+                primary_server_logs,
+                stderr_logs,
+                server_died,
+                server_exit_code,
+                WORKSPACE_PATH,
             )
-            # Sanitizer shadow memory is invisible to the server's memory tracker,
-            # so the kernel OOM killer may SIGKILL the server before any limit
-            # fires. It may also kill the watchdog, losing the "terminated by
-            # signal 9" message in the server log. A SIGKILLed server (exit 137)
-            # with no sanitizer report is an OOM, not a bug.
-            has_sanitizer_report = any(WORKSPACE_PATH.glob("sanitizer.log.*"))
-            kernel_oom_kill = (
-                server_died and server_exit_code == 137 and not has_sanitizer_report
-            )
-            if sanitizer_oom or kernel_oom_kill:
-                print("Sanitizer OOM")
-                if sanitizer_oom:
-                    info.append("WARNING: Sanitizer OOM - test considered passed")
-                else:
-                    info.append(
-                        "WARNING: Server was killed by the kernel OOM killer "
-                        "(sanitizer build) - test considered passed"
-                    )
+            if is_oom_success:
+                info.extend(oom_messages)
                 status = Result.Status.OK
                 is_failed = False
         else:
@@ -529,11 +446,9 @@ def run_fuzz_job(check_name: str):
     if is_failed and status != Result.Status.ERROR:
         # died server - lets fetch failure from log
         fuzzer_log_parser = FuzzerLogParser(
-            server_log=str(server_log),
-            stderr_log=str(stderr_log),
-            fuzzer_log=str(
-                WORKSPACE_PATH / "fuzzerout.sql" if buzzhouse else fuzzer_log
-            ),
+            server_logs=server_logs,
+            stderr_logs=stderr_logs,
+            fuzzer_log=fuzzer_out,
         )
         parsed_name, parsed_info, files = fuzzer_log_parser.parse_failure()
 
@@ -551,15 +466,249 @@ def run_fuzz_job(check_name: str):
         results=extra_results + results,
         status=status if not results else None,
         info=info,
+        stopwatch=sw,
     )
 
     if is_failed:
         # generate fatal log
-        Shell.check(f"rg --text '\\s<Fatal>\\s' {server_log} > {fatal_log}")
+        for server_log, fatal_log in zip(primary_server_logs, fatal_logs):
+            if not Shell.check(f"rg --text '\\s<Fatal>\\s' {server_log} > {fatal_log}"):
+                Path(fatal_log).unlink(missing_ok=True)
+
+        # Encrypt and attach any core dumps found under WORKSPACE_PATH. Without this
+        # step the report carries only the logs and the e2e test (ci/tests/test_e2e.py)
+        # fails because no `.zst.enc` / `.rsa` artifact is produced for cores.
         result.set_files(ClickHouseService.collect_cores(WORKSPACE_PATH))
+
         for file in paths:
             if file.exists() and file.stat().st_size > 0:
                 result.set_files(file)
+
+    return result
+
+
+def _collect_targeted_queries(info: Info) -> tuple[list[str], Result]:
+    targeter = Targeting(info=info)
+    targeter.job_type = Targeting.STATELESS_JOB_TYPE
+
+    # Step 1: changed/new test files in this PR
+    changed_tests = targeter.get_changed_tests()
+    logging.info(
+        "[targeted-fuzzer] Step 1 — changed/new tests (%d): %s",
+        len(changed_tests),
+        ", ".join(sorted(changed_tests)) or "(none)",
+    )
+
+    # Step 2: tests that failed in previous CI runs for this PR
+    try:
+        previously_failed = targeter.get_previously_failed_tests()
+    except Exception as e:
+        logging.warning(
+            "[targeted-fuzzer] Step 2 — failed to fetch previously-failed tests: %s", e
+        )
+        previously_failed = []
+    logging.info(
+        "[targeted-fuzzer] Step 2 — previously failed tests (%d): %s",
+        len(previously_failed),
+        ", ".join(previously_failed) or "(none)",
+    )
+
+    # Step 3: coverage-relevant tests (direct lines, indirect callees, siblings)
+    try:
+        relevant_tests, relevant_tests_result = targeter.get_most_relevant_tests()
+    except Exception as e:
+        logging.warning(
+            "[targeted-fuzzer] Step 3 — failed to fetch coverage-relevant tests: %s", e
+        )
+        relevant_tests = []
+        relevant_tests_result = Result(
+            name="tests found by coverage",
+            status=Result.Status.OK,
+            info=f"Skipped: {e}",
+        )
+    logging.info(
+        "[targeted-fuzzer] Step 3 — coverage-relevant tests (%d)", len(relevant_tests)
+    )
+
+    # Merge all three sets preserving priority order (changed first)
+    seen: set = set()
+    tests: list = []
+    for t in list(changed_tests) + list(previously_failed) + list(relevant_tests):
+        if t not in seen:
+            seen.add(t)
+            tests.append(t)
+    logging.info("[targeted-fuzzer] Total unique tests: %d", len(tests))
+
+    stateless_tests_dir = Path(cwd) / "tests/queries/0_stateless"
+    available_queries: dict[str, list[str]] = {}
+
+    for query_file in stateless_tests_dir.rglob("*.sql"):
+        base_name = query_file.stem
+        available_queries.setdefault(base_name, []).append(
+            f"/repo/{query_file.relative_to(cwd)}"
+        )
+
+    logging.debug(
+        "Indexed %d unique SQL query base names from %s",
+        len(available_queries),
+        stateless_tests_dir,
+    )
+
+    targeted_queries: list[str] = []
+    seen_queries = set()
+    for test in tests:
+        base_name = Path(test).stem.rstrip(".")
+        matches = available_queries.get(base_name, [])
+        if matches:
+            logging.debug("  %s -> %s", test, matches)
+        else:
+            logging.debug("  %s -> no .sql file found (stem: %r)", test, base_name)
+        for query_path in matches:
+            if query_path not in seen_queries:
+                seen_queries.add(query_path)
+                targeted_queries.append(query_path)
+
+    if targeted_queries:
+        targeted_queries_file = WORKSPACE_PATH / "ci-targeted-queries.txt"
+        with open(targeted_queries_file, "w", encoding="utf-8") as f:
+            f.write("\n".join(targeted_queries))
+        logging.info(
+            "Prepared %d targeted queries for AST fuzzer:", len(targeted_queries)
+        )
+        for qf in targeted_queries:
+            logging.info("  %s", qf)
+    else:
+        logging.info("No targeted queries resolved for AST fuzzer")
+
+    return targeted_queries, relevant_tests_result
+
+
+def run_fuzz_job(check_name: str):
+    sw = Utils.Stopwatch()
+    logging.basicConfig(level=logging.INFO)
+    is_targeted = "targeted" in check_name.lower()
+    buzzhouse: bool = check_name.lower().startswith("buzzhouse")
+
+    clickhouse_binary = Path(cwd) / "ci/tmp/clickhouse"
+    assert clickhouse_binary.exists(), "ClickHouse binary not found"
+    clickhouse_binary.chmod(clickhouse_binary.stat().st_mode | 0o111)
+
+    docker_image = DockerImage.get_docker_image(IMAGE_NAME).pull_image()
+
+    WORKSPACE_PATH.mkdir(parents=True, exist_ok=True)
+
+    info = Info()
+    extra_results = []
+    targeted_queries_file: Path | None = None
+
+    if is_targeted and not buzzhouse:
+        targeted_queries, relevant_tests_result = _collect_targeted_queries(info=info)
+        extra_results.append(relevant_tests_result)
+        if not targeted_queries:
+            Result.create_from(
+                status=Result.Status.SKIPPED,
+                info="No relevant tests found for targeted AST fuzzer",
+                results=extra_results,
+                stopwatch=sw,
+            ).complete_job()
+            return
+        targeted_queries_file = WORKSPACE_PATH / "ci-targeted-queries.txt"
+
+    is_old_compatibility = "old_compatibility" in check_name.lower()
+    compatibility_setting: str | None = None
+    if not buzzhouse:
+        if is_old_compatibility:
+            # The minimum version is 24.3 because that's when enable_analyzer
+            # became enabled by default, and the fuzzer has a readonly constraint
+            # on enable_analyzer to avoid wasting cycles on the old interpreter.
+            compatibility_setting = "24.3"
+        elif is_targeted:
+            compatibility_setting = None
+        else:
+            compatibility_setting = f"{random.randint(24, 27)}.{random.randint(1, 12)}"
+        if compatibility_setting:
+            logging.info("AST fuzzer compatibility setting: %s", compatibility_setting)
+        else:
+            logging.info("AST fuzzer compatibility setting is not set")
+
+    run_command = get_run_command(
+        docker_image,
+        buzzhouse,
+        targeted_queries_file=targeted_queries_file,
+        compatibility_setting=compatibility_setting,
+    )
+    logging.info("Going to run %s", run_command)
+
+    is_sanitized = "san" in info.job_name
+
+    changed_files_path = WORKSPACE_PATH / "ci-changed-files.txt"
+    with open(changed_files_path, "w") as f:
+        changed_files = info.get_changed_files()
+        if changed_files is None:
+            if info.is_local_run:
+                logging.warning(
+                    "No changed files available for local run - fuzzing will not be guided by changed test cases"
+                )
+            changed_files = []
+        else:
+            logging.info("Found %d changed files to guide fuzzing", len(changed_files))
+        f.write("\n".join(changed_files))
+
+    Shell.check(command=run_command, verbose=True)
+
+    # Fix file ownership after running docker as root
+    logging.info("Fuzzer: Fixing file ownership after running docker as root")
+    Utils.fix_ownership_after_docker(cwd, docker_image)
+
+    server_log, fuzzer_log, stderr_log, dmesg_log, fatal_log = JOB_ARTIFACTS
+    paths = list(JOB_ARTIFACTS)
+    if buzzhouse:
+        paths.extend([WORKSPACE_PATH / "fuzzerout.sql", WORKSPACE_PATH / "fuzz.json"])
+
+    # Raw sanitizer reports written via *SAN_OPTIONS=log_path (see run-fuzzer.sh).
+    # Their contents are also merged into stderr.log/server.log, but upload the
+    # originals too for debugging truncated reports.
+    paths.extend(sorted(WORKSPACE_PATH.glob("sanitizer.log.*")))
+
+    server_died = False
+    server_exit_code = 0
+    fuzzer_exit_code = 0
+    try:
+        server_died, server_exit_code, fuzzer_exit_code = _read_fuzzer_status(
+            WORKSPACE_PATH / "status.tsv"
+        )
+    except Exception as e:
+        # Missing/empty status.tsv -> runner aborted before reporting (server
+        # start failure, harness error, or infra); malformed status.tsv ->
+        # harness bug. _format_status_error inlines the log tails so the abort
+        # cause is visible instead of an opaque FileNotFoundError traceback.
+        # Attach available artifacts (incl. sanitizer.log.*) so nothing is lost.
+        error_info = _format_status_error(e, paths)
+        early_result = Result.create_from(
+            status=Result.Status.ERROR, info=error_info, stopwatch=sw
+        )
+        for file in paths:
+            if file.exists() and file.stat().st_size > 0:
+                early_result.set_files(file)
+        early_result.complete_job()
+        return
+
+    result = analyze_job_logs(
+        paths,
+        server_died,
+        server_exit_code,
+        fuzzer_exit_code,
+        is_sanitized,
+        WORKSPACE_PATH / "fuzzerout.sql" if buzzhouse else fuzzer_log,
+        fuzzer_log,
+        dmesg_log,
+        [server_log],
+        [stderr_log],
+        [fatal_log],
+        extra_results,
+        sw,
+        False,
+    )
 
     result.complete_job()
 

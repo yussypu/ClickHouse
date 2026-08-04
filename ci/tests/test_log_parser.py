@@ -42,8 +42,8 @@ def test_parse_failure_prefers_asan_check_failed_over_server_assertion(tmp_path)
     )
 
     parser = FuzzerLogParser(
-        server_log=str(server_log),
-        stderr_log=str(stderr_log),
+        server_logs=[str(server_log)],
+        stderr_logs=[str(stderr_log)],
         fuzzer_log="",
     )
 
@@ -68,8 +68,8 @@ def test_parse_failure_asan_check_failed_with_stack_trace(tmp_path):
     stderr_log.write_text(_ASAN_CHECK_FAILED_STDERR, encoding="utf-8")
 
     parser = FuzzerLogParser(
-        server_log=str(server_log),
-        stderr_log=str(stderr_log),
+        server_logs=[str(server_log)],
+        stderr_logs=[str(stderr_log)],
         fuzzer_log="",
     )
 
@@ -101,8 +101,8 @@ def test_parse_failure_logical_error_name_drops_dangling_stack_trace_marker(tmp_
     )
 
     parser = FuzzerLogParser(
-        server_log=str(server_log),
-        stderr_log="",
+        server_logs=[str(server_log)],
+        stderr_logs=[],
         fuzzer_log="",
     )
 

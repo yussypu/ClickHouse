@@ -25,7 +25,7 @@ from avro.datafile import DataFileReader, DataFileWriter
 from avro.errors import AvroException
 from avro.io import DatumReader, DatumWriter
 
-from integration.helpers.client import Client
+from tests.integration.helpers.client import Client
 from pyspark.sql.types import (
     ArrayType,
     BinaryType,

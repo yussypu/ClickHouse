@@ -1030,13 +1030,12 @@ clickhouse-client --query "SELECT count() FROM test.visits"
                 try:
                     # Either log may be absent (e.g. a sanitizer report goes
                     # only to stderr when the server dies before opening its
-                    # log). `str(None)` would become the literal path "None",
-                    # which `FuzzerLogParser.get_stack_trace` then fails to
-                    # open; fall back to whichever log exists instead.
+                    # log), so pass only the logs that exist - the parser skips
+                    # missing sources instead of trying to open the literal
+                    # path "None".
                     log_parser = FuzzerLogParser(
-                        server_log=str(server_log or stderr_log),
-                        stderr_log=str(stderr_log or server_log),
-                        fuzzer_log="",
+                        server_logs=[server_log] if server_log else None,
+                        stderr_logs=[stderr_log] if stderr_log else None,
                     )
                     name, description, files = log_parser.parse_failure()
                     results.append(
