@@ -136,6 +136,13 @@ def _fuzzer_log_terminal_block_has_server_mle(fuzzer_log: Path) -> bool:
     )
 
 
+# BUZZHOUSE_ORACLE in Common/ErrorCodes.cpp. main() returns the error code but the OS
+# keeps only its low byte, so 1011 reaches the job as exit 243. Oracle findings use their
+# own code precisely so they are never confused with a BUZZHOUSE (739) config error.
+BUZZHOUSE_ORACLE_ERROR_CODE = 1011
+BUZZHOUSE_ORACLE_EXIT_CODE = BUZZHOUSE_ORACLE_ERROR_CODE & 0xFF
+
+
 def _is_benign_memory_limit(
     server_died: bool, fuzzer_exit_code: int, terminal_block_has_server_mle: bool
 ) -> bool:
@@ -351,6 +358,9 @@ def analyze_job_logs(
     status = Result.Status.FAIL
     info = []
     is_failed = True
+    # A wrong-result finding, not a crash: the exit code alone is proof, so it must not
+    # be downgraded by the OOM checks or re-diagnosed by the crash log parser below.
+    oracle_finding = not server_died and fuzzer_exit_code == BUZZHOUSE_ORACLE_EXIT_CODE
     if server_died:
         # Server died - status will be determined after OOM checks
         is_failed = True
@@ -387,9 +397,18 @@ def analyze_job_logs(
         status = Result.Status.OK
         info.append("Server hit its memory limit (Code 241) but stayed alive")
         info.append("\n")
+    elif fuzzer_exit_code == BUZZHOUSE_ORACLE_EXIT_CODE:
+        # BuzzHouse caught the server misbehaving: an oracle's two queries that must
+        # agree returned different results, or the health check found errors in the
+        # system tables. Grep the code, not the message, so any wording is kept.
+        status = Result.Status.FAIL
+        oracle_error = Shell.get_output(
+            f"rg --text -o -m1 'Code: {BUZZHOUSE_ORACLE_ERROR_CODE}[.].*' {fuzzer_log}"
+        ).strip()
+        info.append(f"FAIL: {oracle_error or 'BuzzHouse query oracle failed'}")
     elif fuzzer_exit_code in (227,):
-        # BuzzHouse exception, it means a query oracle failed, or
-        # an unwanted exception was found
+        # BuzzHouse exception: an unwanted exception was found, or the fuzzer
+        # itself failed. Oracle failures have their own exit code above.
         status = Result.Status.ERROR
         error_info = (
             Shell.get_output(
@@ -417,7 +436,7 @@ def analyze_job_logs(
     # semantics matter (OOM detection, fatal log extraction).
     primary_server_logs = server_logs[: len(stderr_logs)]
 
-    if is_failed:
+    if is_failed and not oracle_finding:
         if is_sanitized:
             is_oom_success, oom_messages = _classify_sanitizer_oom(
                 primary_server_logs,
@@ -443,7 +462,7 @@ def analyze_job_logs(
                 print("WARNING: dmesg not enabled")
 
     results = []
-    if is_failed and status != Result.Status.ERROR:
+    if is_failed and status != Result.Status.ERROR and not oracle_finding:
         # died server - lets fetch failure from log
         fuzzer_log_parser = FuzzerLogParser(
             server_logs=server_logs,
