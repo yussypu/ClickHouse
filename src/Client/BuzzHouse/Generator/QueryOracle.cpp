@@ -7,7 +7,6 @@ namespace DB
 {
 namespace ErrorCodes
 {
-extern const int BUZZHOUSE;
 extern const int BUZZHOUSE_ORACLE;
 }
 }
