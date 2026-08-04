@@ -74,6 +74,9 @@ class _Args:
 
     def __init__(self, tmp_path):
         self.debug_log_file = str(tmp_path / "case.debuglog")
+        # Read unconditionally by process_result_impl since the bash xtrace was
+        # split into its own file; __getattr__'s None would fail os.path.exists.
+        self.bash_tracing_file = str(tmp_path / "case.bashtrace")
         self.testcase_database = "test_db"
 
     def __getattr__(self, name):
