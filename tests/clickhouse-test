@@ -1750,7 +1750,8 @@ class SettingsRandomizer:
         "execute_exists_as_scalar_subquery": lambda: random.random() > 0.05,
         "normalize_function_names": lambda: random.random() > 0.05,
         "enable_join_runtime_filters": lambda: random.random() > 0.05,
-        "join_runtime_filter_min_probe_rows": lambda: 0 if random.random() < 0.1 else random.randint(1, 10000),
+        # 0 always builds the runtime filter, a huge value never does
+        "join_runtime_filter_min_probe_rows": lambda: random.choice([0, 100, 1000, 1_000_000]),
         "enable_parallel_blocks_marshalling": lambda: random.random() > 0.05,
         # Default-false query_plan_* toggles: enable with 0.3 probability
         "query_plan_reuse_storage_ordering_for_window_functions": lambda: random.random() < 0.3,
@@ -1836,9 +1837,6 @@ class SettingsRandomizer:
         # "min_filtered_ratio_for_lazy_final": lambda: random.choice([0.5, 1.0]),
         "enable_parallel_single_level_merge": lambda: random.random() > 0.05,
         "query_plan_short_circuit_constant_false_join": lambda: random.random() > 0.05,
-        # 0 always builds the runtime filter, a huge value never does
-        "join_runtime_filter_min_probe_rows": lambda: random.choice([0, 100, 1000, 1_000_000]),
-        "use_projection_index_in_read_pools": lambda: random.random() < 0.3,
         # Don't randomize max_streams_for_union_step because it can break
         # "max_streams_for_union_step": lambda: random.choice([0, 1, 2, 10]),
     }
@@ -2006,10 +2004,24 @@ class MergeTreeSettingsRandomizer:
         "packed_skip_index_max_bytes": lambda: random.choice(
             [0, 100, 1024, 1024 * 1024, 10 * 1024 * 1024]
         ),
-        "add_minmax_index_for_block_number_column": lambda: random.random() < 0.3,
-        "add_minmax_index_for_block_offset_column": lambda: random.random() < 0.3,
         "concurrent_part_removal_threshold_for_remote_disk": lambda: random.choice([0, 1, 16, 100]),
-        "part_minmax_index_columns": lambda: random.choice(["partition_key_only", "with_block_number_offset"]),
+        # Don't randomize the implicit-index settings below: they are not transparent to queries,
+        # they change what every table looks like, so they perturb the output of ~150 tests that
+        # print index metadata or plans, and pinning them one by one is not viable.
+        #
+        # `add_minmax_index_for_block_number_column` / `add_minmax_index_for_block_offset_column`
+        # add real `MINMAX` skipping indices named `auto_minmax_index__block_number` /
+        # `auto_minmax_index__block_offset`, which then show up in `SHOW INDEXES`,
+        # `system.data_skipping_indices`, part checksums and the `Skip` section of
+        # `EXPLAIN indexes = 1`. This is why their siblings
+        # `add_minmax_index_for_{numeric,string,temporal}_columns` are not randomized either.
+        # "add_minmax_index_for_block_number_column": lambda: random.random() < 0.3,
+        # "add_minmax_index_for_block_offset_column": lambda: random.random() < 0.3,
+        #
+        # `part_minmax_index_columns = with_block_number_offset` gives every table a part-level
+        # min-max index even without a partition key, so `EXPLAIN indexes = 1` grows an extra
+        # `Min-Max / Condition: true` block everywhere.
+        # "part_minmax_index_columns": lambda: random.choice(["partition_key_only", "with_block_number_offset"]),
     }
 
     @staticmethod
@@ -2038,10 +2050,6 @@ class MergeTreeSettingsRandomizer:
                 continue
 
             random_settings[setting] = value
-
-        if random_settings.get("part_minmax_index_columns") == "with_block_number_offset":
-            random_settings["enable_block_number_column"] = 1
-            random_settings["enable_block_offset_column"] = 1
 
         return random_settings
 
