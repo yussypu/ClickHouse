@@ -6,6 +6,9 @@ SET query_plan_optimize_join_order_randomize = 0;
 SET query_plan_optimize_join_order_algorithm = 'greedy';
 SET query_plan_optimize_join_order_max_searched_plans = 100000;
 SET query_plan_optimize_join_order_limit = 10;
+-- The join keys are computed expressions; the asserted plan shape expects them merged into the
+-- JOIN step, so pin the merge against the runner's randomization.
+SET query_plan_merge_expression_into_join = 1;
 SET enable_analyzer=1;
 
 SELECT explain

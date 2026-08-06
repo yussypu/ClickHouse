@@ -1806,7 +1806,12 @@ class SettingsRandomizer:
         "read_in_order_use_virtual_row_per_block": lambda: random.random() < 0.3,
         "distributed_index_analysis_only_on_coordinator": lambda: random.random() < 0.3,
         "optimize_prewhere_after_pushdown": lambda: random.random() < 0.3,
-        "query_plan_optimize_lazy_final": lambda: random.random() < 0.3,
+        # Don't randomize query_plan_optimize_lazy_final: with it on, a FINAL query that filters on
+        # a sorting-key column moved to PREWHERE and not in the SELECT list throws
+        # NOT_FOUND_COLUMN_IN_BLOCK (04627_prewhere_final_sorting_key_not_projected, the regression
+        # test for #111709, fails with the very exception it guards against). Re-add after
+        # https://github.com/ClickHouse/ClickHouse/issues/113704 is fixed.
+        # "query_plan_optimize_lazy_final": lambda: random.random() < 0.3,
         "optimize_aggregation_in_order_limit": lambda: random.random() > 0.05,
         "optimize_limit_by_function_keys": lambda: random.random() > 0.05,
         "optimize_injective_functions_in_limit_by": lambda: random.random() > 0.05,
@@ -1835,8 +1840,9 @@ class SettingsRandomizer:
         # https://github.com/ClickHouse/ClickHouse/issues/109893.
         # "use_constant_folding_in_index_analysis": lambda: random.random() < 0.5,
         "allow_aggregate_partitions_independently": lambda: random.random() > 0.05,
-        # Gated by query_plan_optimize_lazy_final (randomized above); inert when it is off. Kept out
-        # of conditional_settings on purpose: that map forces the child to False, invalid for a numeric.
+        # Gated by query_plan_optimize_lazy_final (not randomized until #113704 is fixed, so this is
+        # currently inert unless a test enables the parent itself). Kept out of conditional_settings
+        # on purpose: that map forces the child to False, invalid for a numeric.
         "max_bytes_for_lazy_final": lambda: random.choice([0, 1, 256_000_000]),
         # https://github.com/ClickHouse/ClickHouse/issues/112332
         # "min_filtered_ratio_for_lazy_final": lambda: random.choice([0.5, 1.0]),
