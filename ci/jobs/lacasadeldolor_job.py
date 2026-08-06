@@ -258,13 +258,22 @@ def main():
         "CLICKHOUSE_TESTS_SERVER_BIN_PATH": clickhouse_path,
         "CLICKHOUSE_BINARY": clickhouse_path,  # some test cases support alternative binary location
         "CLICKHOUSE_TESTS_CLIENT_BIN_PATH": clickhouse_path,
-        "CLICKHOUSE_USE_OLD_ANALYZER": "1" if use_old_analyzer else "0",
-        "CLICKHOUSE_USE_DISTRIBUTED_PLAN": "1" if use_distributed_plan else "0",
         "CLICKHOUSE_USE_DATABASE_DISK": "1" if use_database_disk else "0",
         "PYTEST_CLEANUP_CONTAINERS": "1",
         "JAVA_PATH": java_path,
         "CLICKHOUSE_IS_SANITIZED": "1" if is_sanitized else "0",
     }
+    # cluster.py enables these two on presence rather than on value, so passing "0" would
+    # still write the configs and leave the default analyzer / plan path never fuzzed.
+    for name, enabled in (
+        ("CLICKHOUSE_USE_OLD_ANALYZER", use_old_analyzer),
+        ("CLICKHOUSE_USE_DISTRIBUTED_PLAN", use_distributed_plan),
+    ):
+        if enabled:
+            test_env[name] = "1"
+        else:
+            os.environ.pop(name, None)
+
     # Apply environment
     for key, value in (test_env or {}).items():
         print(f"Setting environment variable {key} to {value}")
@@ -378,9 +387,10 @@ def main():
     # glue/rest/hms catalog connectors require Spark to be configured in BuzzHouse
     # (generators.py only emits catalog config when --with-spark is active), so gate them on it.
     with_spark = random.randint(1, 4) == 1
-    with_glue = with_spark and random.randint(1, 4) == 1
-    with_rest = with_spark and random.randint(1, 4) == 1
-    with_hms = with_spark and random.randint(1, 4) == 1
+    # No datalake catalogs for now
+    # with_glue = with_spark and random.randint(1, 4) == 1
+    # with_rest = with_spark and random.randint(1, 4) == 1
+    # with_hms = with_spark and random.randint(1, 4) == 1
     base_command = f"""
 python3 {repo_dir}/tests/casa_del_dolor/dolor.py --seed={session_seed} --generator=buzzhouse
 --tmp-files-dir={workspace_path}
@@ -408,11 +418,12 @@ python3 {repo_dir}/tests/casa_del_dolor/dolor.py --seed={session_seed} --generat
 {'--with-redis' if random.randint(1, 5) == 1 else ''}
 {'--with-nginx' if random.randint(1, 6) == 1 else ''}
 {'--with-spark' if with_spark else ''}
-{'--with-glue' if with_glue else ''}
-{'--with-rest' if with_rest else ''}
-{'--with-hms' if with_hms else ''}
 2>&1 | tee {fuzzer_log}
 """
+    # No datalake catalogs for now
+    # {'--with-glue' if with_glue else ''}
+    # {'--with-rest' if with_rest else ''}
+    # {'--with-hms' if with_hms else ''}
 
     # Wrap with pipefail so the pipe returns dolor.py's exit code, not tee's
     base_command = base_command.replace("\n", " ").strip()
@@ -556,11 +567,22 @@ python3 {repo_dir}/tests/casa_del_dolor/dolor.py --seed={session_seed} --generat
         server_logs.append(log_paths[0])
         stderr_logs.append(log_paths[3])
         fatal_logs.append(workspace_path / f"fatal{i}.log")
-    # Also include rotated/compressed server logs so parse_failure() can find
-    # errors that were rotated out of the current log file (e.g. server0.log.0.gz).
+    # Also include the error logs and the rotated/compressed logs so parse_failure() can
+    # find errors that only reached clickhouse-server.err.log, or were rotated out of the
+    # current file (e.g. server0.err.log, server0.log.0.gz). These have to stay behind the
+    # per-node primary logs: analyze_job_logs pairs server_logs[:len(stderr_logs)] with
+    # stderr_logs and fatal_logs by index.
     for i in range(number_of_nodes):
+        err_log = get_node_workspace_logs(workspace_path, i)[1]
+        if err_log.is_file():
+            server_logs.append(err_log)
         rotated = sorted(
-            [p for p in workspace_path.glob(f"server{i}.log.*") if p.is_file()],
+            [
+                p
+                for pattern in (f"server{i}.log.*", f"server{i}.err.log.*")
+                for p in workspace_path.glob(pattern)
+                if p.is_file()
+            ],
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )
