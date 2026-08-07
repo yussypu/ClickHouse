@@ -1384,14 +1384,9 @@ class JobConfigs:
                 "./ci/jobs/scripts/fuzzer/",
                 "./ci/jobs/scripts/server_fuzzer/",
                 "./tests/casa_del_dolor/",
-                # Integration helpers imported by tests/casa_del_dolor — changes to these
-                # files alter the job's behavior, so they must invalidate the cache digest.
-                "./tests/integration/helpers/client.py",
-                "./tests/integration/helpers/cluster.py",
-                "./tests/integration/helpers/config_cluster.py",
-                "./tests/integration/helpers/kafka/",
-                "./tests/integration/helpers/postgres_utility.py",
-                "./tests/integration/helpers/s3_tools.py",
+                # The whole tree, as Keeper Stress does: listing only the imported modules
+                # misses the configs `cluster.py` reads through `write_embedded_config`.
+                "./tests/integration/helpers/",
             ],
         ),
         run_in_docker=f"clickhouse/integration-tests-runner+root+--memory={LIMITED_MEM}+--privileged+--dns-search='.'+--security-opt seccomp=unconfined+--cap-add=SYS_PTRACE+{docker_sock_mount}+--volume=clickhouse_integration_tests_volume:/var/lib/docker+--cgroupns=host",

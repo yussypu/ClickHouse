@@ -142,6 +142,18 @@ def _fuzzer_log_terminal_block_has_server_mle(fuzzer_log: Path) -> bool:
 BUZZHOUSE_ORACLE_ERROR_CODE = 1011
 BUZZHOUSE_ORACLE_EXIT_CODE = BUZZHOUSE_ORACLE_ERROR_CODE & 0xFF
 
+# A sanitizer OOM report or a SIGKILL of the server is treated as OOM, not a bug.
+SANITIZER_OOM_PATTERN = (
+    "Sanitizer:? (out-of-memory|out of memory|failed to allocate)"
+    "|Child process was terminated by signal 9"
+)
+# Genuine (non-OOM) failure signals. "signal 9" (SIGKILL) is excluded because it is the
+# OOM kill signal, not a distinct crash.
+SANITIZER_NON_OOM_PATTERN = (
+    "AddressSanitizer|UndefinedBehaviorSanitizer|ThreadSanitizer"
+    "|MemorySanitizer|SIGSEGV|SIGABRT|signal [0-8]"
+)
+
 
 def _is_benign_memory_limit(
     server_died: bool, fuzzer_exit_code: int, terminal_block_has_server_mle: bool
@@ -277,17 +289,8 @@ def _classify_sanitizer_oom(
     Dolor cluster does not - there the report lands only in stderr.log.
     Returns (is_oom_success, warning_messages).
     """
-    # A sanitizer OOM report or a SIGKILL of the server is treated as OOM.
-    oom_pattern = (
-        "Sanitizer:? (out-of-memory|out of memory|failed to allocate)"
-        "|Child process was terminated by signal 9"
-    )
-    # Genuine (non-OOM) failure signals. "signal 9" (SIGKILL) is excluded because
-    # it is the OOM kill signal, not a distinct crash.
-    non_oom_pattern = (
-        "AddressSanitizer|UndefinedBehaviorSanitizer|ThreadSanitizer"
-        "|MemorySanitizer|SIGSEGV|SIGABRT|signal [0-8]"
-    )
+    oom_pattern = SANITIZER_OOM_PATTERN
+    non_oom_pattern = SANITIZER_NON_OOM_PATTERN
     oom_nodes = []
     non_oom_failure_found = False
     # Only scan primary logs (plus each node's stderr.log). Rotated logs may
@@ -358,9 +361,21 @@ def analyze_job_logs(
     status = Result.Status.FAIL
     info = []
     is_failed = True
-    # A wrong-result finding, not a crash: the exit code alone is proof, so it must not
-    # be downgraded by the OOM checks or re-diagnosed by the crash log parser below.
-    oracle_finding = not server_died and fuzzer_exit_code == BUZZHOUSE_ORACLE_EXIT_CODE
+    # A wrong-result finding, not a crash: it must skip the OOM checks and the crash log
+    # parser below. The exit code alone cannot prove one - it is truncated to 8 bits, so
+    # 243, 499 and 755 all look like BUZZHOUSE_ORACLE (1011) - hence the log marker too.
+    # Only the tail: BuzzHouse exits on the oracle error, so the one that ended the run is
+    # at the end of the log, and an older match is from a step that already finished.
+    oracle_error = (
+        Shell.get_output(
+            f"tail -n1000 {fuzzer_log}"
+            f" | rg --text -o 'Code: {BUZZHOUSE_ORACLE_ERROR_CODE}[.].*'"
+            " | tail -n1"
+        ).strip()
+        if fuzzer_exit_code == BUZZHOUSE_ORACLE_EXIT_CODE
+        else ""
+    )
+    oracle_finding = not server_died and bool(oracle_error)
     if server_died:
         # Server died - status will be determined after OOM checks
         is_failed = True
@@ -397,15 +412,12 @@ def analyze_job_logs(
         status = Result.Status.OK
         info.append("Server hit its memory limit (Code 241) but stayed alive")
         info.append("\n")
-    elif fuzzer_exit_code == BUZZHOUSE_ORACLE_EXIT_CODE:
+    elif oracle_finding:
         # BuzzHouse caught the server misbehaving: an oracle's two queries that must
         # agree returned different results, or the health check found errors in the
-        # system tables. Grep the code, not the message, so any wording is kept.
+        # system tables. `oracle_error` is the matched log line, kept verbatim.
         status = Result.Status.FAIL
-        oracle_error = Shell.get_output(
-            f"rg --text -o -m1 'Code: {BUZZHOUSE_ORACLE_ERROR_CODE}[.].*' {fuzzer_log}"
-        ).strip()
-        info.append(f"FAIL: {oracle_error or 'BuzzHouse query oracle failed'}")
+        info.append(f"FAIL: {oracle_error}")
     elif fuzzer_exit_code in (227,):
         # BuzzHouse exception: an unwanted exception was found, or the fuzzer
         # itself failed. Oracle failures have their own exit code above.
