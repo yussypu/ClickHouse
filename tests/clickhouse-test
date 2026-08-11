@@ -1802,6 +1802,16 @@ class SettingsRandomizer:
         # "min_filtered_ratio_for_lazy_final": lambda: random.choice([0.5, 1.0]),
         "enable_parallel_single_level_merge": lambda: random.random() > 0.05,
         "query_plan_short_circuit_constant_false_join": lambda: random.random() > 0.05,
+        "allow_distinct_partitions_independently": lambda: random.random() > 0.05,
+        "max_number_of_partitions_for_independent_distinct": lambda: random.choice([0, 1, 8, 16, 128, 1024]),
+        "enable_packed_string_keys_in_aggregation": lambda: random.random() > 0.05,
+        "query_plan_optimize_lazy_materialization_for_object_storage": lambda: random.random() > 0.05,
+        "use_query_condition_cache_for_top_k": lambda: random.random() < 0.3,
+        "use_text_index_negative_tokens_cache": lambda: random.random() > 0.05,
+        "optimize_redundant_comparisons": lambda: random.random() > 0.05,
+        "optimize_or_like_chain_min_patterns": lambda: random.choice([1, 2, 4, 10, 100]),
+        "optimize_or_like_chain_min_substrings": lambda: random.choice([1, 2, 4, 10, 100]),
+        "input_format_parquet_spatial_filter_push_down": lambda: random.random() > 0.05,
         # Don't randomize max_streams_for_union_step because it can break
         # "max_streams_for_union_step": lambda: random.choice([0, 1, 2, 10]),
     }
@@ -1825,6 +1835,8 @@ class SettingsRandomizer:
         "use_statistics_for_part_pruning": "use_statistics",
         # applying the projection index earlier is inert when the projection index is not applied
         "use_projection_index_in_read_pools": "optimize_use_projection_filtering",
+        # the top-k variant of the query condition cache needs the cache itself to be on
+        "use_query_condition_cache_for_top_k": "use_query_condition_cache",
     }
 
     stress_test_only_settings = {
@@ -1958,6 +1970,9 @@ class MergeTreeSettingsRandomizer:
         "text_index_dictionary_block_frontcoding_compression": lambda: random.randint(0, 1),
         "text_index_posting_list_block_size": lambda: random.choice([16, 64, 256, 1024, 65536, 1048576]),
         "text_index_posting_list_codec": lambda: random.choice(["none", "bitpacking"]),
+        "text_index_max_memory_usage_before_flush": lambda: random.choice([4096, 65536, 1048576, 1073741824]),
+        "text_index_max_processed_tokens_before_flush": lambda: random.choice([1, 100, 10000, 100000000]),
+        "allow_experimental_adaptive_codec_selection": lambda: random.random() < 0.3,
         "map_serialization_version": lambda: random.choice(["basic", "with_buckets"]),
         "map_serialization_version_for_zero_level_parts": lambda: random.choice(["basic", "with_buckets"]),
         "max_buckets_in_map": lambda: random.randint(1, 100),
