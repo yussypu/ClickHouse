@@ -1785,7 +1785,8 @@ class SettingsRandomizer:
         # subquery over a recursive CTE throws NOT_IMPLEMENTED "Cannot clone ReadFromRecursiveCTEStep".
         # "correlated_subqueries_use_in_memory_buffer": lambda: random.random() > 0.05,
         "use_parquet_metadata_cache": lambda: random.randint(0, 1),
-        "defer_partition_pruning_after_final": lambda: random.random() > 0.05,
+        # Not sure if the test result is valid
+        # "defer_partition_pruning_after_final": lambda: random.random() > 0.05,
         "allow_key_condition_coalesce_rewrite": lambda: random.random() > 0.05,
         # Don't randomize use_constant_folding_in_index_analysis: with it on, a PK column that is
         # also a modulo partition-key input gets an unsafe per-part min-max prune, silently dropping

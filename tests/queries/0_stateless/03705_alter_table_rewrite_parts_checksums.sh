@@ -38,6 +38,8 @@ settings
   ratio_of_defaults_for_sparse_serialization=1,
   -- there was a bug with checksums, fixed in https://github.com/ClickHouse/ClickHouse/pull/89381
   auto_statistics_types='',
+  -- adaptive codec selection picks a codec per part, so INSERT and mutation parts compress differently
+  allow_experimental_adaptive_codec_selection=0,
   --- map serialization version is fixed in serializations.json, but we have different setting for zero level parts, so set it explicitly so we have fixed version in all parts
   map_serialization_version_for_zero_level_parts='basic',
   map_serialization_version='basic',
