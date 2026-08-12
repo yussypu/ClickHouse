@@ -569,11 +569,13 @@ class ReleaseInfo:
                 )
 
             def commit_and_push_bump() -> None:
-                # A diff must exist (prepare gated on not is_late_recovery); a concurrent bump fails loud, a rerun skips.
-                assert stage_bump(), (
-                    f"no version bump to stage on {self.release_branch}: its tip "
-                    f"already carries the bumped version"
-                )
+                # A non-recovery release must produce a bump; only a recovery may find it already there.
+                if not stage_bump():
+                    assert self.is_recovery, (
+                        f"no version bump to stage on {self.release_branch}: a "
+                        f"non-recovery release must advance the version"
+                    )
+                    return
                 if dry_run:
                     Shell.check(f"{GIT_PREFIX} show HEAD", verbose=True)
                     Shell.check(
@@ -594,12 +596,14 @@ class ReleaseInfo:
                             f"re-syncing and retrying {attempt}/{bump_retries}"
                         )
                         resync_branch_tip()
-                        # A backport moves the tip but not the version, so a bump is still needed.
-                        assert stage_bump(), (
-                            f"no version bump to stage on {self.release_branch} "
-                            f"after re-syncing: its tip already carries the bumped "
-                            f"version"
-                        )
+                        # A backport moves the tip but not the version, so a non-recovery release still has a bump.
+                        if not stage_bump():
+                            assert self.is_recovery, (
+                                f"no version bump to stage on {self.release_branch} "
+                                f"after re-syncing: a non-recovery release must "
+                                f"advance the version"
+                            )
+                            return
                 raise RuntimeError(
                     f"Failed to push version bump to {self.release_branch} "
                     f"after {bump_retries} attempts"
