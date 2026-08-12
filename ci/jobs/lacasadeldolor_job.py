@@ -443,26 +443,26 @@ python3 {repo_dir}/tests/casa_del_dolor/dolor.py --seed={session_seed} --generat
     # restarts/setup/shutdown overhead.
     cmd_ok = Shell.check(command=base_command, verbose=True, timeout=4 * 3600)
 
-    # Copy generated configuration files from container to host for further analysis
-    for pattern in [
-        ("buzzhouse*.json", buzzconfig),
-        ("user*.xml", users_xml),
-        ("config*.xml", config_xml),
+    # Copy generated configuration files from container to host for further analysis.
+    # Each `modify_*_settings` helper and the BuzzHouse generator write the *effective*
+    # randomized config to a fresh temporary file (`modify_keeper_settings`: one per Keeper
+    # node). Attach all of them under stable names; copying them over the base files the job
+    # passed to dolor.py would drop the run's starting point from the report, and a single
+    # destination would keep only whichever file the glob happened to visit last.
+    for glob_pattern, artifact_fmt in [
+        ("buzzhouse_*.json", "buzzhouse{}.json"),
+        ("config_*.xml", "effective_config{}.xml"),
+        ("user_*.xml", "effective_users{}.xml"),
+        ("keeper_*.xml", "keeper{}.xml"),
     ]:
-        for f in Path(workspace_path).glob(pattern[0]):
-            if f.resolve() != pattern[1].resolve():
-                shutil.copy2(f, pattern[1])
-    # `modify_keeper_settings` writes one `keeper_<random>.xml` per Keeper node, so keep
-    # every one of them under a stable name instead of overwriting a single destination
-    # (which would silently discard all but the last globbed config).
-    for idx, f in enumerate(
-        sorted(p for p in Path(workspace_path).glob("keeper_*.xml") if p.is_file())
-    ):
-        keeper_artifact = workspace_path / f"keeper{idx}.xml"
-        if f.resolve() != keeper_artifact.resolve():
-            shutil.copy2(f, keeper_artifact)
-        if keeper_artifact not in paths:
-            paths.append(keeper_artifact)
+        for idx, f in enumerate(
+            sorted(p for p in Path(workspace_path).glob(glob_pattern) if p.is_file())
+        ):
+            artifact = workspace_path / artifact_fmt.format(idx)
+            if f.resolve() != artifact.resolve():
+                shutil.copy2(f, artifact)
+            if artifact not in paths:
+                paths.append(artifact)
     # Copy logs from container to host
     for i in range(number_of_nodes):
         for cont_log, host_log in zip(
