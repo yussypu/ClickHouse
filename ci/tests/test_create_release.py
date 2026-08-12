@@ -427,8 +427,8 @@ def test_dry_run_patch_release_end_to_end(tmp_path):
     assert info["release_tag"] == "v26.6.2.2-stable"
     assert info["version"] == "26.6.2.2"
     assert info["commit_sha"] == commit_sha
-    assert info["create_new_release"] is True
-    assert info["is_branch_release"] is True  # gates the deferred version bump
+    assert info["is_recovery"] is False
+    assert info["is_late_recovery"] is False  # gates the deferred version bump
 
     step("--push-release-tag", "--dry-run")
     # The dry-run bump writes the file, prints its diff, then reverts it. The diff
@@ -444,7 +444,7 @@ def test_prepare_recovers_from_tag(tmp_path):
     """Dispatching an existing release tag recovers (re-publishes) that release.
 
     Recovery is expressed by passing the version tag: ``prepare`` must set
-    ``create_new_release=false`` and not attempt to create it again.
+    ``is_recovery=true`` and not attempt to create it again.
     """
     pytest.importorskip("boto3")  # create_release.py imports s3_helper -> boto3
 
@@ -523,16 +523,16 @@ def test_prepare_recovers_from_tag(tmp_path):
     with open("/tmp/release_info.json", encoding="utf-8") as f:
         info = json.load(f)
     assert info["release_tag"] == "v26.6.2.1-stable"
-    assert info["create_new_release"] is False
+    assert info["is_recovery"] is True
     # Branch tip still describes this release, so recovery must complete the bump.
-    assert info["is_branch_release"] is True
+    assert info["is_late_recovery"] is False
 
 
 def test_recovery_of_unbumped_branch_bumps_version(tmp_path):
     """Heal: recovering an un-bumped branch must still advance the version file.
 
     The tag sits at the branch tip with no post-release bump commit, so this is a
-    recovery (``create_new_release=false``) but ``is_branch_release=true``. The
+    recovery (``is_recovery=true``) but ``is_late_recovery=false``. The
     bump must run and move 26.6.2 -> 26.6.3, so the patch number stops being
     pinned. The dry-run bump writes the file, prints its diff, then reverts it.
     """
@@ -603,8 +603,8 @@ def test_recovery_of_unbumped_branch_bumps_version(tmp_path):
          "--release-type", "patch", "--dry-run")
     with open("/tmp/release_info.json", encoding="utf-8") as f:
         info = json.load(f)
-    assert info["create_new_release"] is False  # recovery
-    assert info["is_branch_release"] is True  # branch not advanced -> gates the bump
+    assert info["is_recovery"] is True  # recovery
+    assert info["is_late_recovery"] is False  # branch not advanced -> gates the bump
 
     bump = step("--create-bump-version-pr", "--dry-run")
     assert "SET(VERSION_PATCH 3)" in bump.stdout  # 26.6.2 -> 26.6.3
@@ -619,7 +619,7 @@ def test_prepare_recovers_already_released_commit(tmp_path):
     is not recomputed) even after the first attempt already pushed the release
     tag. With no *newer* release tag on the branch this is not out-of-order:
     the tag at this commit is this run's own tag, so ``prepare`` must recover
-    (``create_new_release=false``) rather than re-enter the creation/merge path.
+    (``is_recovery=true``) rather than re-enter the creation/merge path.
     """
     pytest.importorskip("boto3")  # create_release.py imports s3_helper -> boto3
 
@@ -706,9 +706,9 @@ def test_prepare_recovers_already_released_commit(tmp_path):
     with open("/tmp/release_info.json", encoding="utf-8") as f:
         info = json.load(f)
     assert info["release_tag"] == "v26.6.2.1-stable"
-    assert info["create_new_release"] is False
+    assert info["is_recovery"] is True
     # Rerun on the un-bumped tip: the deferred version bump is still owed.
-    assert info["is_branch_release"] is True
+    assert info["is_late_recovery"] is False
 
 
 def test_prepare_refuses_out_of_order_commit(tmp_path):
@@ -817,8 +817,8 @@ def test_prepare_recovers_superseded_release_without_rebumping(tmp_path):
     """Recovering a superseded release via its tag must NOT re-bump the branch.
 
     The branch tip is a newer release (``26.6.4``) than the recovered ``26.6.3``,
-    so ``prepare`` recovers (``create_new_release=false``) with
-    ``is_branch_release=false`` and the deferred bump must not rewrite it back.
+    so ``prepare`` recovers (``is_recovery=true``) with
+    ``is_late_recovery=true`` and the deferred bump must not rewrite it back.
     """
     pytest.importorskip("boto3")  # create_release.py imports s3_helper -> boto3
 
@@ -913,9 +913,9 @@ def test_prepare_recovers_superseded_release_without_rebumping(tmp_path):
     with open("/tmp/release_info.json", encoding="utf-8") as f:
         info = json.load(f)
     assert info["release_tag"] == "v26.6.3.1-stable"
-    assert info["create_new_release"] is False
+    assert info["is_recovery"] is True
     # Branch is already ahead — must not rewrite the newer version backwards.
-    assert info["is_branch_release"] is False
+    assert info["is_late_recovery"] is True
 
 
 def test_prepare_refuses_stale_commit_even_when_it_is_a_tagged_release(tmp_path):
@@ -1022,7 +1022,7 @@ def test_prepare_creates_from_branch_ref(tmp_path):
     release — it is never treated as out-of-order, even if a version file lags.
 
     The branch tip is a commit past ``v26.6.1.1-stable``; dispatching the branch
-    (not a tag/SHA) must set ``create_new_release=true``.
+    (not a tag/SHA) must set ``is_recovery=false``.
     """
     pytest.importorskip("boto3")  # create_release.py imports s3_helper -> boto3
 
@@ -1109,8 +1109,8 @@ def test_prepare_creates_from_branch_ref(tmp_path):
     with open("/tmp/release_info.json", encoding="utf-8") as f:
         info = json.load(f)
     assert info["release_tag"] == "v26.6.2.2-stable"
-    assert info["create_new_release"] is True
-    assert info["is_branch_release"] is True
+    assert info["is_recovery"] is False
+    assert info["is_late_recovery"] is False
 
 
 def test_prepare_fails_closed_on_stale_branch_version_file(tmp_path):

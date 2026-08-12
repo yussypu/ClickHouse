@@ -330,20 +330,20 @@ def main():
     # out-of-order ref. The creation steps below run only when it does; a
     # recovery (only-repo/only-docker) or an out-of-order full run skips them
     # without erroring and just re-exports repos / rebuilds docker.
-    create_new_release = False
-    is_branch_release = False
+    is_recovery = False
+    is_late_recovery = False
     if ok:
         with open(RELEASE_INFO_FILE) as f:
             _prepared = json.load(f)
-        create_new_release = _prepared["create_new_release"]
-        is_branch_release = _prepared["is_branch_release"]
+        is_recovery = _prepared["is_recovery"]
+        is_late_recovery = _prepared["is_late_recovery"]
 
     # only-repo / only-docker only re-publish artifacts for an already-created
     # release (repo/Docker recovery). If the ref resolves to a new release, they
     # would otherwise fall through to the creation steps below (push tag, bump
     # version, PRs) and produce a partial new release, so reject that misuse and
     # require the release tag instead.
-    if ok and create_new_release and (args.only_repo or args.only_docker):
+    if ok and not is_recovery and (args.only_repo or args.only_docker):
 
         def _require_recovery_ref():
             raise RuntimeError(
@@ -366,8 +366,8 @@ def main():
     if args.dry_run:
         # No gh reads on dry-run (it may be a local run without gh auth): fall
         # back to the fresh-release signal so the generation is still previewed.
-        release_pr_absent = create_new_release
-        release_pr_needs_merge = create_new_release
+        release_pr_absent = not is_recovery
+        release_pr_needs_merge = not is_recovery
     else:
         release_pr_branch = None
         release_pr_state = ""  # "MERGED" | "OPEN" | ""
@@ -404,7 +404,7 @@ def main():
             workdir=REPO_PATH,
         )
 
-    if create_new_release:
+    if not is_recovery:
         step(
             name="Push Git Tag for the Release",
             command=[
@@ -414,7 +414,7 @@ def main():
             workdir=REPO_PATH,
         )
 
-    if args.release_type == "new" and create_new_release:
+    if args.release_type == "new" and not is_recovery:
         step(
             name="Push New Release Branch",
             command=[
@@ -673,13 +673,13 @@ def main():
         with open(RELEASE_INFO_FILE) as f:
             release_info = json.load(f)
         release_tag = release_info["release_tag"]
-        # is_branch_release: this release is the latest on its branch → publish
-        # the floating minor/major tags. is_latest: its branch is the latest
-        # release branch → additionally publish `latest`. These decide the
+        # not is_late_recovery: this release is the latest on its branch →
+        # publish the floating minor/major tags. is_latest: its branch is the
+        # latest release branch → additionally publish `latest`. These decide the
         # floating tags by whether the release is current, so recovery of the
-        # current release re-applies them while recovery of a superseded one
-        # only re-publishes its exact version tag.
-        is_branch_release = release_info["is_branch_release"]
+        # current release re-applies them while recovery of a superseded one (a
+        # late recovery) only re-publishes its exact version tag.
+        is_late_recovery = release_info["is_late_recovery"]
         is_latest = release_info["latest"]
 
         def _make_docker_build(
@@ -709,11 +709,11 @@ def main():
                     tags = [f"--tag={image}:{version_string}{version_suffix}"]
                     # Floating minor/major tags must point at the latest release
                     # on the branch, so move them only when this release is that
-                    # latest one (is_branch_release) — true for a normal release
+                    # latest one (not a late recovery) — true for a normal release
                     # and for recovery of the current release, false for recovery
                     # of a superseded tag (which would otherwise move them back to
                     # an older image).
-                    if is_branch_release:
+                    if not is_late_recovery:
                         tags += [
                             f"--tag={image}:{version_minor}{version_suffix}",
                             f"--tag={image}:{version_major}{version_suffix}",
@@ -861,9 +861,10 @@ def main():
     # step already failed, so a failed publish leaves the branch un-bumped and
     # recoverable. ("new" bumps earlier, above, because the merge step below
     # merges the master bump PR it opens.)
-    # Gated on `is_branch_release` so an un-bumped recovery still completes the bump.
+    # Gated on `not is_late_recovery` so an un-bumped recovery still completes
+    # the bump, while a superseded (late) recovery never rewrites the version.
     if (
-        is_branch_release
+        not is_late_recovery
         and args.release_type == "patch"
         and not (args.only_repo or args.only_docker)
     ):

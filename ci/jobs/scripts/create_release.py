@@ -209,13 +209,15 @@ class ReleaseInfo:
     commit_sha: str
     latest: bool
     codename: str
-    # Whether this release is the latest on its branch (controls the floating
-    # minor/major docker tags). `latest` above is whether the branch is the
-    # latest release branch (additionally controls the `latest` docker tag).
-    is_branch_release: bool = False
-    # Whether this run creates a new release (tag/version-bump/changelog). False
-    # when re-publishing artifacts for an already-released or out-of-order ref.
-    create_new_release: bool = False
+    # Whether the branch has already advanced to a newer release than this one
+    # (a "late" / superseded recovery). Controls the floating minor/major docker
+    # tags: they move only when this is not a late recovery. `latest` above is
+    # whether the branch is the latest release branch (controls `latest`).
+    is_late_recovery: bool = False
+    # Whether this run re-publishes an existing release instead of creating one
+    # (tag/version-bump/changelog) — true for an already-released or
+    # out-of-order ref.
+    is_recovery: bool = False
     changelog_pr: str = ""
     version_bump_pr: str = ""
     prs_merged: bool = False
@@ -348,11 +350,11 @@ class ReleaseInfo:
         self.release_progress = ReleaseProgress.STARTED
         self.latest = latest_release
 
-        # Is the branch already developing a newer release than this one? This
-        # release is the latest on its branch unless the branch tip is newer —
-        # controls the floating minor/major Docker tags (recovering the current
-        # release re-applies them; recovering a superseded one does not).
-        self.is_branch_release = not newer_release_exists
+        # Has the branch already advanced to a newer release than this one (a
+        # late / superseded recovery)? Controls the floating minor/major Docker
+        # tags — they move only when this is not a late recovery (recovering the
+        # current release re-applies them; recovering a superseded one does not).
+        self.is_late_recovery = newer_release_exists
 
         # The operation is decided from the ref and the branch's version:
         #   * ref is an existing release tag -> recovery: re-publish exactly that
@@ -429,7 +431,7 @@ class ReleaseInfo:
                     f"automated version bump — there is nothing to release."
                 )
             recover = False
-        self.create_new_release = not recover
+        self.is_recovery = recover
         self.release_type = release_type
         return self
 
