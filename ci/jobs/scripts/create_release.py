@@ -524,8 +524,11 @@ class ReleaseInfo:
             )
 
             def stage_bump() -> bool:
-                # Stage the bump onto the current HEAD; return True if a commit is
-                # ready to push, False on a rerun no-op or dry run.
+                # Write and commit the bump onto the current HEAD, returning True.
+                # Returns False only if there is unexpectedly no diff (the branch
+                # already carries this version); the caller asserts against that.
+                # VERSION_GITHASH is recomputed for the current HEAD, so this is
+                # safe to call again after re-syncing to a newer branch tip.
                 if self.release_type == "new":
                     version.githash = CHVersion.get_release_version().githash
                 else:
@@ -545,71 +548,76 @@ class ReleaseInfo:
                     f"git diff --quiet HEAD -- '{FILE_WITH_VERSION_PATH}' '{GENERATED_CONTRIBUTORS}'"
                 )
                 assert diff_rc <= 1, f"`git diff` failed with exit code {diff_rc}"
-                if dry_run:
-                    Shell.check(cmd_commit_version_upd, dry_run=True, verbose=True)
-                    Shell.check(
-                        f"{GIT_PREFIX} diff '{FILE_WITH_VERSION_PATH}' '{GENERATED_CONTRIBUTORS}'",
-                        verbose=True,
-                    )
-                    Shell.check(
-                        f"{GIT_PREFIX} checkout '{FILE_WITH_VERSION_PATH}' '{GENERATED_CONTRIBUTORS}'",
-                        verbose=True,
-                    )
-                    return False
                 if diff_rc == 0:
-                    print(
-                        f"Version files already up to date on {self.release_branch} — skipping commit and push (rerun)"
-                    )
                     return False
                 Shell.check(cmd_commit_version_upd, strict=True, verbose=True)
                 return True
 
-            if self.release_type == "new" or dry_run:
-                if stage_bump():
-                    Git.push(
-                        GITHUB_REPOSITORY,
-                        f"HEAD:refs/heads/{self.release_branch}",
-                        strict=True,
-                        retries=3,  # transient workflow-scope timeout (see push_release_tag)
+            def push_bump() -> None:
+                Git.push(
+                    GITHUB_REPOSITORY,
+                    f"HEAD:refs/heads/{self.release_branch}",
+                    strict=True,
+                    retries=3,  # transient workflow-scope timeout (see push_release_tag)
+                )
+
+            def resync_branch_tip() -> None:
+                # Backports land on the release branch during the ~1h release, so
+                # the first push can be non-fast-forward. Move to origin's current
+                # tip so the next stage_bump rebuilds the bump (and its
+                # VERSION_GITHASH) on top of it.
+                Shell.check(
+                    f"{GIT_PREFIX} fetch --quiet origin {self.release_branch}",
+                    strict=True,
+                    verbose=True,
+                )
+                Shell.check(
+                    f"{GIT_PREFIX} reset --hard FETCH_HEAD", strict=True, verbose=True
+                )
+
+            def commit_and_push_bump() -> None:
+                # prepare gated this step on the branch being un-bumped
+                # (not is_late_recovery), so there must be a diff to commit. A
+                # False here means the tip was bumped concurrently after prepare —
+                # fail loud; a rerun then sees is_late_recovery and skips.
+                assert stage_bump(), (
+                    f"no version bump to stage on {self.release_branch}: its tip "
+                    f"already carries the bumped version"
+                )
+                if dry_run:
+                    Shell.check(f"{GIT_PREFIX} show HEAD", verbose=True)
+                    Shell.check(
+                        f"{GIT_PREFIX} reset --hard HEAD~1", strict=True, verbose=True
                     )
-            else:
-                # Backports land on the release branch during the ~1h release, so a
-                # bump built on the job's start-of-run checkout pushes
-                # non-fast-forward; re-sync to origin's tip and rebuild each attempt.
-                pushed = False
+                    return
+                if self.release_type == "new":
+                    # A freshly cut branch has no concurrent writers, so a rejected
+                    # push is a real error, not a lost race — let it propagate.
+                    push_bump()
+                    return
                 for attempt in range(1, bump_retries + 1):
-                    Shell.check(
-                        f"{GIT_PREFIX} fetch --quiet origin {self.release_branch}",
-                        strict=True,
-                        verbose=True,
-                    )
-                    Shell.check(
-                        f"{GIT_PREFIX} reset --hard FETCH_HEAD",
-                        strict=True,
-                        verbose=True,
-                    )
-                    if not stage_bump():
-                        pushed = True
-                        break
                     try:
-                        Git.push(
-                            GITHUB_REPOSITORY,
-                            f"HEAD:refs/heads/{self.release_branch}",
-                            strict=True,
-                            retries=3,  # transient workflow-scope timeout
-                        )
-                        pushed = True
-                        break
+                        push_bump()
+                        return
                     except RuntimeError:
                         print(
                             f"Version bump push to {self.release_branch} rejected; "
                             f"re-syncing and retrying {attempt}/{bump_retries}"
                         )
-                if not pushed:
-                    raise RuntimeError(
-                        f"Failed to push version bump to {self.release_branch} "
-                        f"after {bump_retries} attempts"
-                    )
+                        resync_branch_tip()
+                        # A backport moved the tip but not the version, so there is
+                        # still a bump to stage; same concurrent-bump assertion.
+                        assert stage_bump(), (
+                            f"no version bump to stage on {self.release_branch} "
+                            f"after re-syncing: its tip already carries the bumped "
+                            f"version"
+                        )
+                raise RuntimeError(
+                    f"Failed to push version bump to {self.release_branch} "
+                    f"after {bump_retries} attempts"
+                )
+
+            commit_and_push_bump()
 
         if self.release_type == "new":
             release_type = version.get_stable_release_type()
