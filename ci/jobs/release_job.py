@@ -330,8 +330,10 @@ def main():
     # out-of-order ref. The creation steps below run only when it does; a
     # recovery (only-repo/only-docker) or an out-of-order full run skips them
     # without erroring and just re-exports repos / rebuilds docker.
-    is_recovery = False
-    is_late_recovery = False
+    # Fail closed if prepare did not run (ok is False): assume recovery so no
+    # creation step (tag / bump / PR) fires.
+    is_recovery = True
+    is_late_recovery = True
     if ok:
         with open(RELEASE_INFO_FILE) as f:
             _prepared = json.load(f)

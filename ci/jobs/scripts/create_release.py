@@ -213,11 +213,11 @@ class ReleaseInfo:
     # (a "late" / superseded recovery). Controls the floating minor/major docker
     # tags: they move only when this is not a late recovery. `latest` above is
     # whether the branch is the latest release branch (controls `latest`).
-    is_late_recovery: bool = False
+    is_late_recovery: bool = True
     # Whether this run re-publishes an existing release instead of creating one
     # (tag/version-bump/changelog) — true for an already-released or
     # out-of-order ref.
-    is_recovery: bool = False
+    is_recovery: bool = True
     changelog_pr: str = ""
     version_bump_pr: str = ""
     prs_merged: bool = False
