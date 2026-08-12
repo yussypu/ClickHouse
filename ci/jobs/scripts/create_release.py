@@ -524,11 +524,7 @@ class ReleaseInfo:
             )
 
             def stage_bump() -> bool:
-                # Write and commit the bump onto the current HEAD, returning True.
-                # Returns False only if there is unexpectedly no diff (the branch
-                # already carries this version); the caller asserts against that.
-                # VERSION_GITHASH is recomputed for the current HEAD, so this is
-                # safe to call again after re-syncing to a newer branch tip.
+                # Recomputes VERSION_GITHASH for HEAD, so it is safe to re-call after a resync.
                 if self.release_type == "new":
                     version.githash = CHVersion.get_release_version().githash
                 else:
@@ -562,10 +558,7 @@ class ReleaseInfo:
                 )
 
             def resync_branch_tip() -> None:
-                # Backports land on the release branch during the ~1h release, so
-                # the first push can be non-fast-forward. Move to origin's current
-                # tip so the next stage_bump rebuilds the bump (and its
-                # VERSION_GITHASH) on top of it.
+                # Re-sync to origin's tip so a backport landed mid-release does not force a non-fast-forward push.
                 Shell.check(
                     f"{GIT_PREFIX} fetch --quiet origin {self.release_branch}",
                     strict=True,
@@ -576,10 +569,7 @@ class ReleaseInfo:
                 )
 
             def commit_and_push_bump() -> None:
-                # prepare gated this step on the branch being un-bumped
-                # (not is_late_recovery), so there must be a diff to commit. A
-                # False here means the tip was bumped concurrently after prepare —
-                # fail loud; a rerun then sees is_late_recovery and skips.
+                # A diff must exist (prepare gated on not is_late_recovery); a concurrent bump fails loud, a rerun skips.
                 assert stage_bump(), (
                     f"no version bump to stage on {self.release_branch}: its tip "
                     f"already carries the bumped version"
@@ -591,8 +581,7 @@ class ReleaseInfo:
                     )
                     return
                 if self.release_type == "new":
-                    # A freshly cut branch has no concurrent writers, so a rejected
-                    # push is a real error, not a lost race — let it propagate.
+                    # Freshly cut branch has no concurrent writers, so a rejected push is a real error.
                     push_bump()
                     return
                 for attempt in range(1, bump_retries + 1):
@@ -605,8 +594,7 @@ class ReleaseInfo:
                             f"re-syncing and retrying {attempt}/{bump_retries}"
                         )
                         resync_branch_tip()
-                        # A backport moved the tip but not the version, so there is
-                        # still a bump to stage; same concurrent-bump assertion.
+                        # A backport moves the tip but not the version, so a bump is still needed.
                         assert stage_bump(), (
                             f"no version bump to stage on {self.release_branch} "
                             f"after re-syncing: its tip already carries the bumped "
