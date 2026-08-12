@@ -1263,3 +1263,132 @@ def test_enqueue_release_pr_open_enqueues(monkeypatch):
     )
     assert ri._enqueue_release_pr("https://x/pull/111", "ChangeLog", False) is True
     assert enq["pr"] == 111
+
+
+def test_bump_retries_onto_advanced_branch_tip(tmp_path):
+    """Non-fast-forward bump: a backport advances ``origin`` mid-release, so the
+    bump must re-sync to origin's new tip, rebuild the bump there, and land
+    patch+1 on top of the backport without discarding it.
+
+    This is the only test that drives the real (non-dry-run) push path: pushes
+    are redirected from the tokenized ``github.com`` URL to a local bare origin
+    via git ``insteadOf`` plus a fixed ``GH_TOKEN``, so the
+    ``fetch`` / ``reset --hard FETCH_HEAD`` / retry logic actually executes.
+    """
+    pytest.importorskip("boto3")  # create_release.py imports s3_helper -> boto3
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    origin = tmp_path / "origin.git"
+
+    def git(*args, cwd=repo):
+        subprocess.run(
+            ["git", *args], cwd=cwd, check=True, capture_output=True, text=True
+        )
+
+    git("init", "-q", "-b", "26.6")
+    git("config", "user.email", "robot@clickhouse.com")
+    git("config", "user.name", "robot-clickhouse")
+    git("config", "commit.gpgsign", "false")
+    git("config", "tag.gpgsign", "false")
+
+    (repo / "README.md").write_text("clickhouse\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-q", "-m", "Anchor commit (previous release)")
+    anchor = _head_sha(repo)
+
+    (repo / "cmake").mkdir()
+    (repo / _VERSIONS_FILE).write_text(
+        _VERSIONS_CONTENT.replace("0" * 40, anchor), encoding="utf-8"
+    )
+    (repo / "src" / "Storages" / "System").mkdir(parents=True)
+    (repo / _CONTRIBUTORS_FILE).write_text(
+        "const char * auto_contributors[] {\n    nullptr};\n", encoding="utf-8"
+    )
+    git("add", "-A")
+    git("commit", "-q", "-m", "Base release commit (un-bumped tip)")
+    git("tag", "-a", "v26.6.2.1-stable", "-m", "Release v26.6.2.1-stable")
+
+    # Bare origin the tool fetches from and (via insteadOf) pushes to.
+    git("init", "-q", "--bare", str(origin), cwd=tmp_path)
+    git("remote", "add", "origin", str(origin))
+    git("push", "-q", "origin", "26.6", "--tags")
+    git("fetch", "-q", "origin")
+
+    # A backport lands on origin/26.6 after the release job's checkout, so the
+    # tip the bump must land on is ahead of what this repo has. Push it from a
+    # throwaway clone so this repo's local 26.6 stays at the release tip.
+    clone = tmp_path / "backport_clone"
+    git("clone", "-q", "-b", "26.6", str(origin), str(clone), cwd=tmp_path)
+    git("config", "user.email", "dev@clickhouse.com", cwd=clone)
+    git("config", "user.name", "dev", cwd=clone)
+    git("config", "commit.gpgsign", "false", cwd=clone)
+    (clone / "backport.txt").write_text("backport landed mid-release\n", encoding="utf-8")
+    git("add", "-A", cwd=clone)
+    git("commit", "-q", "-m", "Backport during release", cwd=clone)
+    git("push", "-q", "origin", "HEAD:26.6", cwd=clone)
+    backport_sha = _head_sha(clone)
+
+    os.symlink(os.path.join(REPO_ROOT, "ci"), repo / "ci")
+    os.symlink(os.path.join(REPO_ROOT, "tests"), repo / "tests")
+    script = str(repo / "ci" / "jobs" / "scripts" / "create_release.py")
+
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    gh_stub = bindir / "gh"
+    gh_stub.write_text("#!/bin/sh\necho '[]'\n", encoding="utf-8")
+    gh_stub.chmod(0o755)
+
+    # Redirect the tokenized github.com push URL to the local bare origin. The
+    # token is pinned via GH_TOKEN so the URL insteadOf must match is fixed.
+    push_url = "https://x-access-token:faketoken@github.com/test/clickhouse.git"
+    git("config", f"url.{origin}.insteadOf", push_url)
+
+    env = {
+        **os.environ,
+        "PYTHONPATH": REPO_ROOT,
+        "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
+        "GITHUB_REPOSITORY": "test/clickhouse",
+        "GH_TOKEN": "faketoken",
+    }
+
+    def step(*flags):
+        result = subprocess.run(
+            [sys.executable, script, *flags], cwd=repo, env=env,
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, (
+            f"step {flags} failed (rc={result.returncode})\n"
+            f"--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}"
+        )
+        return result
+
+    step("--prepare-release-info", "--ref", "v26.6.2.1-stable",
+         "--release-type", "patch", "--dry-run")
+    with open("/tmp/release_info.json", encoding="utf-8") as f:
+        info = json.load(f)
+    assert info["is_late_recovery"] is False
+
+    # Real (non-dry) bump: origin advanced to the backport, so the bump must
+    # re-sync to that tip (`reset --hard FETCH_HEAD`) and rebuild there before
+    # pushing, rather than pushing the stale start-of-run checkout.
+    bump = step("--create-bump-version-pr")
+    assert "reset --hard FETCH_HEAD" in bump.stdout
+
+    def origin_show(path):
+        return subprocess.run(
+            ["git", "show", f"26.6:{path}"], cwd=origin,
+            check=True, capture_output=True, text=True,
+        ).stdout
+
+    # Origin now carries the bump at patch+1 (26.6.2 -> 26.6.3).
+    versions = origin_show(_VERSIONS_FILE)
+    assert "SET(VERSION_PATCH 3)" in versions
+    assert "SET(VERSION_STRING 26.6.3.1)" in versions
+    # The backport is preserved: it is an ancestor of the pushed bump, and its
+    # file survived the rebuild rather than being clobbered.
+    subprocess.run(
+        ["git", "merge-base", "--is-ancestor", backport_sha, "26.6"],
+        cwd=origin, check=True, capture_output=True, text=True,
+    )
+    assert "backport landed mid-release" in origin_show("backport.txt")
