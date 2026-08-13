@@ -9,6 +9,14 @@ from pathlib import Path
 sys.path.append(".")
 from ci.praktika.utils import Shell
 
+# A sanitizer report that is an out-of-memory rather than a bug. Defined here, not in the
+# job scripts, because the parser has to recognise one to keep it from masking a real
+# failure; `ast_fuzzer_job` re-exports it for the OOM classifier.
+SANITIZER_OOM_PATTERN = (
+    "Sanitizer:? (out-of-memory|out of memory|failed to allocate)"
+    "|Child process was terminated by signal 9"
+)
+
 
 class FuzzerLogParser:
     UNKNOWN_ERROR = "Unknown error"
@@ -21,6 +29,11 @@ class FuzzerLogParser:
         ", Stack trace (when copying this message, always include the lines below):"
     )
     MAX_INLINE_REPRODUCE_COMMANDS = 20
+    # Lines of a matched failure reported as the error output.
+    MATCH_WINDOW_LINES = 10
+    # How far to read when matches are being skipped. A sanitizer report and its frames
+    # run a few tens of lines, so this covers several before giving up on the log.
+    SCAN_LINES = 200
     SANITIZER_ERROR_PATTERN = (
         r"(SUMMARY|ERROR|WARNING): [a-zA-Z]+Sanitizer:.*|"
         r".*[a-zA-Z]+Sanitizer: CHECK failed:.*"
@@ -124,22 +137,50 @@ class FuzzerLogParser:
             return gzip.open(path, "rt", errors="replace", **kwargs)
         return open(path, "r", errors="replace", **kwargs)
 
-    def _rg_first_match(self, pattern, logs, context_after=10):
+    def _rg_first_match(self, pattern, logs, context_after=10, exclude_pattern=None):
         """
         Run ripgrep with the given pattern against each log file in *logs*
         (in order) and return the output from the first file that matches.
+        With *exclude_pattern*, a match whose own line matches it too is reported
+        only when no log holds a match that does not: a benign OOM report on one
+        node must not mask a real sanitizer failure on another, nor an earlier OOM
+        mask a real failure later in the same log.
         Returns (output, matched_log_path) or (None, None).
         """
+        fallback_output, fallback_log = None, None
         for log in logs:
             if not log:
                 continue
+            # Read past the first match when skipping some, so an excluded report
+            # cannot hide the matches behind it; the window is trimmed back below.
+            limit = self.MATCH_WINDOW_LINES if not exclude_pattern else self.SCAN_LINES
             output = Shell.get_output(
-                f"rg -z --text -A {context_after} -o '{pattern}' {log} | head -n10",
+                f"rg -z --text -A {context_after} -o '{pattern}' {log} | head -n{limit}",
                 strict=False,
             )
-            if output:
+            if not output:
+                continue
+            if not exclude_pattern:
                 return output, log
-        return None, None
+
+            lines = output.splitlines()
+            if fallback_output is None:
+                fallback_output = "\n".join(lines[: self.MATCH_WINDOW_LINES])
+                fallback_log = log
+            # `-o` prints the matched text itself, so a line is a match when it
+            # matches `pattern` again - and the pattern's trailing `.*` keeps the
+            # rest of the line, which is what carries the OOM marker.
+            start = next(
+                (
+                    i
+                    for i, line in enumerate(lines)
+                    if re.search(pattern, line) and not re.search(exclude_pattern, line)
+                ),
+                None,
+            )
+            if start is not None:
+                return "\n".join(lines[start : start + self.MATCH_WINDOW_LINES]), log
+        return fallback_output, fallback_log
 
     @staticmethod
     def extract_format_string(line):
@@ -262,7 +303,15 @@ class FuzzerLogParser:
                         # stderr.log may be absent when stress_runner.sh exits early (e.g. server failed to restart).
                         # Skip sanitizer patterns and let the loop check the server log for other error types.
                         continue
-                    output, file = self._rg_first_match(pattern, self.stderr_logs)
+                    # Prefer a real sanitizer failure over an OOM report: the OOM
+                    # classifier already refuses to pass the run when any node has a
+                    # genuine one, so reporting the OOM would bucket it under the
+                    # wrong issue and lose the real stack trace.
+                    output, file = self._rg_first_match(
+                        pattern,
+                        self.stderr_logs,
+                        exclude_pattern=SANITIZER_OOM_PATTERN,
+                    )
                 else:
                     if not self.server_logs:
                         continue

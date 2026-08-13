@@ -10,7 +10,7 @@ from pathlib import Path
 from ci.jobs.scripts.clickhouse_service import ClickHouseService
 from ci.jobs.scripts.find_tests import Targeting
 from ci.jobs.scripts.docker_image import DockerImage
-from ci.jobs.scripts.log_parser import FuzzerLogParser
+from ci.jobs.scripts.log_parser import SANITIZER_OOM_PATTERN, FuzzerLogParser
 from ci.praktika.info import Info
 from ci.praktika.result import Result
 from ci.praktika.utils import Shell, Utils
@@ -142,11 +142,6 @@ def _fuzzer_log_terminal_block_has_server_mle(fuzzer_log: Path) -> bool:
 BUZZHOUSE_ORACLE_ERROR_CODE = 1011
 BUZZHOUSE_ORACLE_EXIT_CODE = BUZZHOUSE_ORACLE_ERROR_CODE & 0xFF
 
-# A sanitizer OOM report or a SIGKILL of the server is treated as OOM, not a bug.
-SANITIZER_OOM_PATTERN = (
-    "Sanitizer:? (out-of-memory|out of memory|failed to allocate)"
-    "|Child process was terminated by signal 9"
-)
 # Genuine (non-OOM) failure signals. "signal 9" (SIGKILL) is excluded because it is the
 # OOM kill signal, not a distinct crash.
 SANITIZER_NON_OOM_PATTERN = (
