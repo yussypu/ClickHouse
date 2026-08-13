@@ -390,7 +390,8 @@ def main():
     # Set up and run La Casa del Dolor
     # glue/rest/hms catalog connectors require Spark to be configured in BuzzHouse
     # (generators.py only emits catalog config when --with-spark is active), so gate them on it.
-    with_spark = random.randint(1, 4) == 1
+    # No spark for now
+    with_spark = False # random.randint(1, 4) == 1
     # No datalake catalogs for now
     # with_glue = with_spark and random.randint(1, 4) == 1
     # with_rest = with_spark and random.randint(1, 4) == 1
