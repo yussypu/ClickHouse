@@ -142,11 +142,23 @@ def _fuzzer_log_terminal_block_has_server_mle(fuzzer_log: Path) -> bool:
 BUZZHOUSE_ORACLE_ERROR_CODE = 1011
 BUZZHOUSE_ORACLE_EXIT_CODE = BUZZHOUSE_ORACLE_ERROR_CODE & 0xFF
 
-# Genuine (non-OOM) failure signals. "signal 9" (SIGKILL) is excluded because it is the
-# OOM kill signal, not a distinct crash.
-SANITIZER_NON_OOM_PATTERN = (
-    "AddressSanitizer|UndefinedBehaviorSanitizer|ThreadSanitizer"
-    "|MemorySanitizer|SIGSEGV|SIGABRT|signal [0-8]"
+# Genuine (non-OOM) failure signals that veto the OOM-is-success downgrade. The bare
+# sanitizer names below stay because they match a mention anywhere, which is wider than the
+# parser's own report-shaped patterns; those are unioned in so a logical error, assertion or
+# fatal-handler signal on one node cannot be hidden by a benign OOM on another. Widening can
+# only turn OK into FAIL, never the reverse. `is_memory_limit_exceeded` is left out: a server
+# that survived its memory cap is itself a benign verdict. "signal 9" (SIGKILL) is the OOM
+# kill signal, and the callers filter those lines back out with `SANITIZER_OOM_PATTERN`.
+SANITIZER_NON_OOM_PATTERN = "|".join(
+    [
+        "AddressSanitizer|UndefinedBehaviorSanitizer|ThreadSanitizer"
+        "|MemorySanitizer|SIGSEGV|SIGABRT|signal [0-8]",
+        *(
+            pattern
+            for _, flag_name, pattern in FuzzerLogParser.ERROR_PATTERNS
+            if flag_name != "is_memory_limit_exceeded"
+        ),
+    ]
 )
 
 

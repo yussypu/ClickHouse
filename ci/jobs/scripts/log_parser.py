@@ -145,7 +145,9 @@ class FuzzerLogParser:
         only when no log holds a match that does not: a benign OOM report on one
         node must not mask a real sanitizer failure on another, nor an earlier OOM
         mask a real failure later in the same log.
-        Returns (output, matched_log_path) or (None, None).
+        Returns (output, matched_log_path, excluded_only). `excluded_only` is True when
+        every match found was an excluded one, so the caller can keep looking for a
+        better failure elsewhere before settling for it.
         """
         fallback_output, fallback_log = None, None
         for log in logs:
@@ -161,7 +163,7 @@ class FuzzerLogParser:
             if not output:
                 continue
             if not exclude_pattern:
-                return output, log
+                return output, log, False
 
             lines = output.splitlines()
             if fallback_output is None:
@@ -179,8 +181,8 @@ class FuzzerLogParser:
                 None,
             )
             if start is not None:
-                return "\n".join(lines[start : start + self.MATCH_WINDOW_LINES]), log
-        return fallback_output, fallback_log
+                return "\n".join(lines[start : start + self.MATCH_WINDOW_LINES]), log, False
+        return fallback_output, fallback_log, fallback_output is not None
 
     @staticmethod
     def extract_format_string(line):
@@ -287,6 +289,10 @@ class FuzzerLogParser:
         error_output = None
         matched_pattern = None
         matched_log_file = None
+        # A stderr.log holding nothing but an OOM report. Held aside rather than reported,
+        # so the server-log patterns below still get their turn and a real crash on another
+        # node wins; settled for only if nothing else matches at all.
+        oom_only_match = None
         # Track which server log matched so downstream helpers search it first.
         matched_server_log = self.server_logs[0] if self.server_logs else None
         for name, flag_name, pattern in self.ERROR_PATTERNS:
@@ -307,15 +313,19 @@ class FuzzerLogParser:
                     # classifier already refuses to pass the run when any node has a
                     # genuine one, so reporting the OOM would bucket it under the
                     # wrong issue and lose the real stack trace.
-                    output, file = self._rg_first_match(
+                    output, file, oom_only = self._rg_first_match(
                         pattern,
                         self.stderr_logs,
                         exclude_pattern=SANITIZER_OOM_PATTERN,
                     )
+                    if oom_only:
+                        if oom_only_match is None:
+                            oom_only_match = (output, file, pattern)
+                        continue
                 else:
                     if not self.server_logs:
                         continue
-                    output, file = self._rg_first_match(pattern, self.server_logs)
+                    output, file, _ = self._rg_first_match(pattern, self.server_logs)
                     if file:
                         matched_server_log = file
 
@@ -334,6 +344,11 @@ class FuzzerLogParser:
                 elif flag_name == "is_memory_limit_exceeded":
                     is_memory_limit_exceeded = True
                 break
+
+        if not error_output and oom_only_match is not None:
+            # Nothing else matched anywhere, so the OOM report is the whole story.
+            error_output, matched_log_file, matched_pattern = oom_only_match
+            is_sanitizer_error = True
 
         if not error_output:
             return (
