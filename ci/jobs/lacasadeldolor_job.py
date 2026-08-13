@@ -637,8 +637,11 @@ python3 {repo_dir}/tests/casa_del_dolor/dolor.py --seed={session_seed} --generat
         # here; this can only turn OK into FAIL, never the reverse.
         if benign_downgrade and rotated_stderr_logs:
             paths_to_scan = " ".join(str(p) for p in rotated_stderr_logs)
+            # `-z` because rotation gzips all but the newest file, and a report in a
+            # `.gz` is exactly the one this re-check exists to catch. The second `rg`
+            # filters the already-decompressed pipe, so it needs no `-z`.
             if Shell.get_output(
-                f"rg --text '{SANITIZER_NON_OOM_PATTERN}' {paths_to_scan}"
+                f"rg -z --text '{SANITIZER_NON_OOM_PATTERN}' {paths_to_scan}"
                 f" | rg --text -v '{SANITIZER_OOM_PATTERN}'"
             ):
                 print("Genuine sanitizer report found in a rotated stderr log")
