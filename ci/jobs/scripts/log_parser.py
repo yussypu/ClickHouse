@@ -126,6 +126,9 @@ class FuzzerLogParser:
 
         # Set by parse_failure() to track which server log file matched
         self._matched_server_log = self.server_logs[0] if self.server_logs else None
+        # Likewise for the log a sanitizer report matched in, so its stack trace is taken
+        # from the node that actually failed rather than whichever file comes first.
+        self._matched_sanitizer_log = None
 
     # ------------------------------------------------------------------
     # Helpers to search across all log files
@@ -289,6 +292,7 @@ class FuzzerLogParser:
         error_output = None
         matched_pattern = None
         matched_log_file = None
+        matched_sanitizer_log = None
         # A stderr.log holding nothing but an OOM report. Held aside rather than reported,
         # so the server-log patterns below still get their turn and a real crash on another
         # node wins; settled for only if nothing else matches at all.
@@ -305,9 +309,15 @@ class FuzzerLogParser:
                 )
             else:
                 if flag_name == "is_sanitizer_error":
-                    if not self.stderr_logs:
-                        # stderr.log may be absent when stress_runner.sh exits early (e.g. server failed to restart).
-                        # Skip sanitizer patterns and let the loop check the server log for other error types.
+                    # A report lands in stderr.log on the Dolor cluster and in server.log for
+                    # the AST/Buzz runner, and rotated stderr.log.N.gz files are passed in
+                    # `server_logs` - so both lists are searched, current stderr first.
+                    # Searching only `stderr_logs` loses a report that has already rotated
+                    # away, which `dolor.py` still fails the run for (it greps stderr.log*).
+                    sanitizer_logs = [*self.stderr_logs, *self.server_logs]
+                    if not sanitizer_logs:
+                        # Both may be absent when stress_runner.sh exits early (e.g. server
+                        # failed to restart); let the loop check other error types.
                         continue
                     # Prefer a real sanitizer failure over an OOM report: the OOM
                     # classifier already refuses to pass the run when any node has a
@@ -315,13 +325,16 @@ class FuzzerLogParser:
                     # wrong issue and lose the real stack trace.
                     output, file, oom_only = self._rg_first_match(
                         pattern,
-                        self.stderr_logs,
+                        sanitizer_logs,
                         exclude_pattern=SANITIZER_OOM_PATTERN,
                     )
                     if oom_only:
                         if oom_only_match is None:
                             oom_only_match = (output, file, pattern)
                         continue
+                    matched_sanitizer_log = file
+                    if file is not None and file in self.server_logs:
+                        matched_server_log = file
                 else:
                     if not self.server_logs:
                         continue
@@ -348,6 +361,7 @@ class FuzzerLogParser:
         if not error_output and oom_only_match is not None:
             # Nothing else matched anywhere, so the OOM report is the whole story.
             error_output, matched_log_file, matched_pattern = oom_only_match
+            matched_sanitizer_log = matched_log_file
             is_sanitizer_error = True
 
         if not error_output:
@@ -358,6 +372,7 @@ class FuzzerLogParser:
             )
 
         self._matched_server_log = matched_server_log
+        self._matched_sanitizer_log = matched_sanitizer_log
 
         error_lines = error_output.splitlines()
         result_name = error_lines[0].removesuffix(".")
@@ -601,10 +616,16 @@ class FuzzerLogParser:
 
             return result_lines
 
-        # Search all stderr logs, return the first one that has a trace
-        for log in self.stderr_logs:
-            if not log:
-                continue
+        # Prefer the log the sanitizer pattern actually matched in, so a benign report on
+        # one node does not supply the trace for another node's failure. Rotated stderr
+        # files arrive in `server_logs`, so they are searched too.
+        matched = self._matched_sanitizer_log
+        logs_to_search = [matched] if matched else []
+        for log in (*self.stderr_logs, *self.server_logs):
+            if log and log != matched:
+                logs_to_search.append(log)
+
+        for log in logs_to_search:
             lines = _extract_sanitizer_trace(log)
             if lines:
                 return "\n".join(lines)
