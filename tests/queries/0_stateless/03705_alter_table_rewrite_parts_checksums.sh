@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Tags: no-msan
+# no-msan: the full-rewrite mutation over six skip indexes regularly exceeds the
+# flaky-check 180s limit under MSan
 
 CUR_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=../shell_config.sh

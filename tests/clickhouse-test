@@ -1766,6 +1766,10 @@ class SettingsRandomizer:
         # test for #111709, fails with the very exception it guards against). Re-add after
         # https://github.com/ClickHouse/ClickHouse/issues/113704 is fixed.
         # "query_plan_optimize_lazy_final": lambda: random.random() < 0.3,
+        "max_bytes_for_lazy_final": lambda: random.choice([0, 1, 256_000_000]),
+        # Gives inconsistent results
+        # "defer_partition_pruning_after_final": lambda: random.random() > 0.05,
+        # "min_filtered_ratio_for_lazy_final": lambda: random.choice([0.5, 1.0]),
         "optimize_aggregation_in_order_limit": lambda: random.random() > 0.05,
         "optimize_limit_by_function_keys": lambda: random.random() > 0.05,
         "optimize_injective_functions_in_limit_by": lambda: random.random() > 0.05,
@@ -1785,22 +1789,9 @@ class SettingsRandomizer:
         # subquery over a recursive CTE throws NOT_IMPLEMENTED "Cannot clone ReadFromRecursiveCTEStep".
         # "correlated_subqueries_use_in_memory_buffer": lambda: random.random() > 0.05,
         "use_parquet_metadata_cache": lambda: random.randint(0, 1),
-        # Not sure if the test result is valid
-        # "defer_partition_pruning_after_final": lambda: random.random() > 0.05,
         "allow_key_condition_coalesce_rewrite": lambda: random.random() > 0.05,
-        # Don't randomize use_constant_folding_in_index_analysis: with it on, a PK column that is
-        # also a modulo partition-key input gets an unsafe per-part min-max prune, silently dropping
-        # valid rows (01870_modulo_partition_key, 04149_minmax_block_number_partition_filtering), and
-        # it is also the trigger for the "Invalid partition key size" logical error of
-        # https://github.com/ClickHouse/ClickHouse/issues/109893.
-        # "use_constant_folding_in_index_analysis": lambda: random.random() < 0.5,
+        "use_constant_folding_in_index_analysis": lambda: random.random() < 0.5,
         "allow_aggregate_partitions_independently": lambda: random.random() > 0.05,
-        # Gated by query_plan_optimize_lazy_final (not randomized until #113704 is fixed, so this is
-        # currently inert unless a test enables the parent itself). Kept out of conditional_settings
-        # on purpose: that map forces the child to False, invalid for a numeric.
-        "max_bytes_for_lazy_final": lambda: random.choice([0, 1, 256_000_000]),
-        # https://github.com/ClickHouse/ClickHouse/issues/112332
-        # "min_filtered_ratio_for_lazy_final": lambda: random.choice([0.5, 1.0]),
         "enable_parallel_single_level_merge": lambda: random.random() > 0.05,
         "query_plan_short_circuit_constant_false_join": lambda: random.random() > 0.05,
         "allow_distinct_partitions_independently": lambda: random.random() > 0.05,
