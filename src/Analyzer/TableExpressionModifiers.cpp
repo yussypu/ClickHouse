@@ -3,6 +3,9 @@
 #include <Common/SipHash.h>
 
 #include <Core/Streaming/CursorTree.h>
+#include <Core/Streaming/StreamingVirtualColumns.h>
+
+#include <Storages/StorageInMemoryMetadata.h>
 
 #include <IO/ReadBuffer.h>
 #include <IO/ReadHelpers.h>
@@ -25,15 +28,7 @@ void TableExpressionModifiers::dump(WriteBuffer & buffer) const
         buffer << ", sample_offset: " << ASTSampleRatio::toString(*sample_offset_ratio);
 
     if (stream_settings)
-    {
         buffer << ", stream";
-
-        if (stream_settings->cursor)
-            buffer << " cursor";
-
-        if (stream_settings->watermark)
-            buffer << " watermark";
-    }
 }
 
 void TableExpressionModifiers::updateTreeHash(SipHash & hash_state) const
@@ -57,6 +52,9 @@ void TableExpressionModifiers::updateTreeHash(SipHash & hash_state) const
 
     if (stream_settings.has_value())
     {
+        hash_state.update(stream_settings->subscribe_for_updates);
+        hash_state.update(stream_settings->unordered);
+
         if (stream_settings->cursor)
         {
             for (const auto & entry : cursorTreeToMap(stream_settings->cursor))
@@ -71,7 +69,7 @@ void TableExpressionModifiers::updateTreeHash(SipHash & hash_state) const
         {
             hash_state.update(stream_settings->watermark->column);
             hash_state.update(stream_settings->watermark->idle_timeout.count());
-            hash_state.update(stream_settings->watermark->expression->getTreeHash());
+            stream_settings->watermark->expression->updateTreeHash(hash_state, /*ignore_aliases=*/false);
         }
     }
 }
@@ -115,13 +113,28 @@ String TableExpressionModifiers::formatForErrorMessage() const
         if (has_final || sample_size_ratio || sample_offset_ratio)
             buffer << ' ';
         buffer << "STREAM";
-        if (stream_settings->cursor)
-            buffer << " CURSOR";
-        if (stream_settings->watermark)
-            buffer << " WATERMARK";
     }
 
     return buffer.str();
+}
+
+StorageMetadataPtr extendMetadataWithModifiers(const StorageMetadataPtr & metadata, const TableExpressionModifiers & modifiers)
+{
+    if (!modifiers.hasStream())
+        return metadata;
+
+    const auto & stream_settings = modifiers.getStreamSettings();
+    if (!stream_settings->watermark)
+        return metadata;
+
+    auto column = metadata->getColumns().tryGetColumn(GetColumnsOptions::AllPhysical, stream_settings->watermark->column);
+    if (!column)
+        return metadata;
+
+    auto extended = std::make_shared<StorageInMemoryMetadata>(*metadata);
+    extended->virtuals.addEphemeral(std::string(TimeAttributeColumn::name), column->type, "Event-time value of the current row.", VirtualsMaterializationPlace::Streaming);
+    extended->virtuals.addEphemeral(std::string(WatermarkColumn::name), column->type, "Running watermark in effect for the current row.", VirtualsMaterializationPlace::Streaming);
+    return extended;
 }
 
 }

@@ -5,7 +5,7 @@
 #include <Storages/SelectQueryInfo.h>
 #include <Storages/MergeTree/MergeTreeData.h>
 
-#include <Analyzer/TableExpressionModifiers.h>
+#include <Core/Streaming/Settings.h>
 
 #include <QueryPipeline/Pipe.h>
 #include <QueryPipeline/QueryPlanResourceHolder.h>
@@ -23,6 +23,7 @@ class MergeTreeCommitOrderSequentialSource final : public IProcessor
 {
     Status handleRunningPipeline();
     Status handleReconfiguration();
+    Status handleBoundedReconfiguration();
     void handlePipelineEnd();
 
 public:
@@ -56,7 +57,7 @@ private:
     const size_t requested_num_streams;
     const UInt64 max_block_size;
     const MergeTreeBoundsSubscriptionPtr subscription;
-    const StreamingSettings stream_settings;
+    const StreamSettings stream_settings;
     const LoggerPtr log;
 
     /// Runtime information
@@ -64,11 +65,14 @@ private:
     std::map<String, Field> last_watermark;
     std::map<String, std::chrono::steady_clock::time_point> last_snapshot_time;
     bool emitted_global_idle = false;
+    int64_t finished_snapshots = 0;
 
+    /// Current snapshot runtime information
     Processors current_sub_pipeline;
     std::unique_ptr<QueryPlanResourceHolder> current_resources;
     std::map<String, Int64> reading_up_to_block_numbers;
 
+    /// Reconfiguration
     std::optional<Pipe> pending_snapshot;
     std::unique_ptr<QueryPlanResourceHolder> pending_resources;
 };

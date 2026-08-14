@@ -1,31 +1,44 @@
 #pragma once
 
-#include <Analyzer/IQueryTreeNode.h>
+#include <Core/Streaming/CursorTree.h>
 
-#include <Core/Streaming/CursorTree_fwd.h>
+#include <Parsers/IAST_fwd.h>
 
 #include <chrono>
 
 namespace DB
 {
 
+///////////////////////////////////////////////////////////////////////////////////
 struct WatermarkSettings
 {
     String column;
-    QueryTreeNodePtr expression;
-    std::chrono::milliseconds idle_timeout;
+    ASTPtr expression;
+    std::chrono::milliseconds idle_timeout{0};
+
+public:
+    std::shared_ptr<WatermarkSettings> clone() const;
+    bool operator==(const WatermarkSettings & rhs) const;
 };
 using WatermarkSettingsPtr = std::shared_ptr<WatermarkSettings>;
 
-struct StreamingSettings
+///////////////////////////////////////////////////////////////////////////////////
+struct StreamSettings
 {
+    /// If true, read only the first snapshot and then finish (do not subscribe for updates).
+    bool subscribe_for_updates = true;
+    /// If true, do not sort each snapshot by cursor; ordering holds only between snapshots.
+    bool unordered = false;
     CursorTreeNodePtr cursor;
     WatermarkSettingsPtr watermark;
+
+public:
+    std::shared_ptr<StreamSettings> clone() const;
+    bool operator==(const StreamSettings & rhs) const;
 };
-using StreamingSettingsPtr = std::shared_ptr<StreamingSettings>;
+using StreamSettingsPtr = std::shared_ptr<StreamSettings>;
 
 ///////////////////////////////////////////////////////////////////////////////////
-
 bool isIdleExpired(
     const std::chrono::steady_clock::time_point & now,
     const std::chrono::steady_clock::time_point & last_active,

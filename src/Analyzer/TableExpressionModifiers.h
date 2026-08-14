@@ -1,10 +1,9 @@
 #pragma once
 
 #include <Parsers/ASTSampleRatio.h>
+#include <Parsers/IAST.h>
 
-#include <Analyzer/IQueryTreeNode.h>
-
-#include <Core/Streaming/CursorTree_fwd.h>
+#include <Core/Streaming/CursorTree.h>
 #include <Core/Streaming/Settings.h>
 
 namespace DB
@@ -12,6 +11,9 @@ namespace DB
 
 class ReadBuffer;
 class WriteBuffer;
+
+struct StorageInMemoryMetadata;
+using StorageMetadataPtr = std::shared_ptr<const StorageInMemoryMetadata>;
 
 /** Modifiers that can be used for table, table function and subquery in JOIN TREE.
   *
@@ -26,7 +28,7 @@ public:
     TableExpressionModifiers(bool has_final_,
         std::optional<Rational> sample_size_ratio_,
         std::optional<Rational> sample_offset_ratio_,
-        std::optional<StreamingSettings> stream_settings_ = {})
+        std::optional<StreamSettings> stream_settings_ = {})
         : has_final(has_final_)
         , sample_size_ratio(sample_size_ratio_)
         , sample_offset_ratio(sample_offset_ratio_)
@@ -76,7 +78,7 @@ public:
     }
 
     /// Get stream settings
-    const std::optional<StreamingSettings> & getStreamingSettings() const
+    const std::optional<StreamSettings> & getStreamSettings() const
     {
         return stream_settings;
     }
@@ -94,57 +96,21 @@ private:
     bool has_final = false;
     std::optional<Rational> sample_size_ratio;
     std::optional<Rational> sample_offset_ratio;
-    std::optional<StreamingSettings> stream_settings;
+    std::optional<StreamSettings> stream_settings;
 };
 
 void serializeRational(TableExpressionModifiers::Rational val, WriteBuffer & out);
 TableExpressionModifiers::Rational deserializeRational(ReadBuffer & in);
 
-inline bool operator==(const WatermarkSettings & lhs, const WatermarkSettings & rhs)
-{
-    if (lhs.column != rhs.column)
-        return false;
-
-    if (lhs.idle_timeout != rhs.idle_timeout)
-        return false;
-
-    if ((lhs.expression == nullptr) != (rhs.expression == nullptr))
-        return false;
-
-    return !lhs.expression || lhs.expression->isEqual(*rhs.expression);
-}
-
-inline bool operator==(const StreamingSettings & lhs, const StreamingSettings & rhs)
-{
-    /// Compare cursors
-    {
-        if ((lhs.cursor == nullptr) != (rhs.cursor == nullptr))
-            return false;
-
-        if (lhs.cursor)
-            if (cursorTreeToMap(lhs.cursor) != cursorTreeToMap(rhs.cursor))
-                return false;
-    }
-
-    /// Compare watermarks
-    {
-        if ((lhs.watermark == nullptr) != (rhs.watermark == nullptr))
-            return false;
-
-        if (lhs.watermark)
-            if (*lhs.watermark != *rhs.watermark)
-                return false;
-    }
-
-    return true;
-}
+/// Returns metadata extended according to table expression modifiers.
+StorageMetadataPtr extendMetadataWithModifiers(const StorageMetadataPtr & metadata, const TableExpressionModifiers & modifiers);
 
 inline bool operator==(const TableExpressionModifiers & lhs, const TableExpressionModifiers & rhs)
 {
     return lhs.hasFinal() == rhs.hasFinal()
         && lhs.getSampleSizeRatio() == rhs.getSampleSizeRatio()
         && lhs.getSampleOffsetRatio() == rhs.getSampleOffsetRatio()
-        && lhs.getStreamingSettings() == rhs.getStreamingSettings();
+        && lhs.getStreamSettings() == rhs.getStreamSettings();
 }
 
 inline bool operator!=(const TableExpressionModifiers & lhs, const TableExpressionModifiers & rhs)

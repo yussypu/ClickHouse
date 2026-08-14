@@ -6,7 +6,6 @@ namespace DB
 
 class IStorage;
 class ICompressionCodec;
-class TableExpressionModifiers;
 
 using CompressionCodecPtr = std::shared_ptr<ICompressionCodec>;
 
@@ -26,9 +25,8 @@ struct StorageSnapshot
     {
         virtual ~Data() = default;
     };
-
-    using DataPtr = std::unique_ptr<Data>;
-    DataPtr data;
+    using DataPtr = std::shared_ptr<const Data>;
+    const DataPtr data;
 
     StorageSnapshot(
         const IStorage & storage_,
@@ -39,11 +37,8 @@ struct StorageSnapshot
         StorageMetadataPtr metadata_,
         DataPtr data_);
 
-    StorageSnapshot(
-        std::shared_ptr<StorageSnapshot> && snapshot,
-        const TableExpressionModifiers & modifiers);
-
     std::shared_ptr<StorageSnapshot> clone(DataPtr data_) const;
+    std::shared_ptr<StorageSnapshot> clone(StorageMetadataPtr metadata_, DataPtr data_) const;
 
     /// Get columns description
     ColumnsDescription getAllColumnsDescription() const;
