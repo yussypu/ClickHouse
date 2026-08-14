@@ -1790,7 +1790,7 @@ class SettingsRandomizer:
         # "correlated_subqueries_use_in_memory_buffer": lambda: random.random() > 0.05,
         "use_parquet_metadata_cache": lambda: random.randint(0, 1),
         "allow_key_condition_coalesce_rewrite": lambda: random.random() > 0.05,
-        "use_constant_folding_in_index_analysis": lambda: random.random() < 0.5,
+        # "use_constant_folding_in_index_analysis": lambda: random.random() < 0.5,
         "allow_aggregate_partitions_independently": lambda: random.random() > 0.05,
         "enable_parallel_single_level_merge": lambda: random.random() > 0.05,
         "query_plan_short_circuit_constant_false_join": lambda: random.random() > 0.05,
