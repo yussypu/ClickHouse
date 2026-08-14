@@ -1009,19 +1009,33 @@ clickhouse-client --query "SELECT count() FROM test.visits"
                 reverse=True,
             )
 
-        def pick_file_with(pattern: str, needle: str) -> Path | None:
+        def pick_file_with(pattern: str, regex: str) -> Path | None:
             # Select the specific log that contains the hit, not merely the most
             # recently modified one. On multi-server runs (e.g. DatabaseReplicated)
             # the crashed server stops logging first and so has the OLDEST mtime,
             # while surviving replicas keep writing - picking by mtime would hand
             # the parser a log without the crash and yield a bogus "Unknown error".
+            # `-z` because the logger rotates and compresses on every server open, so
+            # the only copy of the hit may sit in a `.gz`.
             out = Shell.get_output(
-                f"cd {self.log_dir} && grep -la '{needle}' {pattern} 2>/dev/null | head -n 1 || true"
+                f"cd {self.log_dir} && rg -lz --text '{regex}' {pattern} 2>/dev/null | head -n 1 || true"
             ).strip()
             return Path(self.log_dir) / out if out else None
 
+        # Trigger on exactly what the parser can classify, taken from the parser itself so
+        # this prefilter cannot end up narrower than what `parse_failure` understands:
+        # `SANITIZER_ERROR_PATTERN` covers the reports that name a sanitizer,
+        # `RUNTIME_ERROR_PATTERN` the bare "runtime error:" lines UBSan prints without
+        # naming itself. Matching on the literal "anitizer" instead used to drop the
+        # latter, leaving the parser uncalled for a failure it can describe.
+        sanitizer_pattern = (
+            f"{FuzzerLogParser.SANITIZER_ERROR_PATTERN}|"
+            f"{FuzzerLogParser.RUNTIME_ERROR_PATTERN}"
+        )
+        # `stderr*.log*` with `rg -z`, not `stderr*.log`: the logger rotates and compresses
+        # on every server open, so a report can survive only in `stderr.log.1.gz`.
         sanitizer_hits = Shell.get_output(
-            f"sed -n '/.*anitizer/,${{p}}' {self.log_dir}/stderr*.log 2>/dev/null | "
+            f"rg -z --text --no-filename '{sanitizer_pattern}' {self.log_dir}/stderr*.log* 2>/dev/null | "
             f'grep -a -v "ASan doesn\'t fully support makecontext/swapcontext functions" | '
             f'grep -a -v "ASan is ignoring requested __asan_handle_no_return" | '
             f'grep -a -v "False positive error reports may follow" | '
@@ -1030,22 +1044,24 @@ clickhouse-client --query "SELECT count() FROM test.visits"
             "head -n 1 || true"
         )
         fatal_hits = Shell.get_output(
-            f"cd {self.log_dir} && grep -a '<Fatal>' clickhouse-server*.log 2>/dev/null | head -n 1 || true"
+            f"cd {self.log_dir} && rg -z --text --no-filename '<Fatal>' clickhouse-server*.log* 2>/dev/null | head -n 1 || true"
         )
         if sanitizer_hits or fatal_hits:
             server_log = (
-                pick_file_with("clickhouse-server*.err.log", "<Fatal>")
-                or pick_file_with("clickhouse-server*.log", "<Fatal>")
-                or pick_latest_file("clickhouse-server*.err.log")
-                or pick_latest_file("clickhouse-server*.log")
+                pick_file_with("clickhouse-server*.err.log*", "<Fatal>")
+                or pick_file_with("clickhouse-server*.log*", "<Fatal>")
+                or pick_latest_file("clickhouse-server*.err.log*")
+                or pick_latest_file("clickhouse-server*.log*")
             )
-            # `sanitizer_hits` greps every stderr*.log, so the parser has to see every one
+            # `sanitizer_hits` greps every stderr*.log*, so the parser has to see every one
             # of them, not just the newest: a node that died on a sanitizer report stops
             # writing and ends up with the OLDEST mtime, exactly as `pick_file_with` notes
-            # above. The matching log is moved to the front so the reported sanitizer name,
-            # stack trace and STID come from it rather than from a healthy node.
-            stderr_logs = pick_all_files("stderr*.log")
-            matched_stderr = pick_file_with("stderr*.log", "anitizer")
+            # above. The rotated ones are included because `parse_failure` searches them
+            # too, and a report that rotated away still fails the run. The matching log is
+            # moved to the front so the reported sanitizer name, stack trace and STID come
+            # from it rather than from a healthy node.
+            stderr_logs = pick_all_files("stderr*.log*")
+            matched_stderr = pick_file_with("stderr*.log*", sanitizer_pattern)
             if matched_stderr:
                 stderr_logs = [matched_stderr] + [
                     p for p in stderr_logs if p != matched_stderr
