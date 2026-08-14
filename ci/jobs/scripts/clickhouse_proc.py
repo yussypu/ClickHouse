@@ -1001,6 +1001,14 @@ clickhouse-client --query "SELECT count() FROM test.visits"
                 return None
             return max(candidates, key=lambda p: p.stat().st_mtime)
 
+        def pick_all_files(pattern: str) -> list[Path]:
+            log_dir = Path(self.log_dir)
+            return sorted(
+                (p for p in log_dir.glob(pattern) if p.is_file()),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+
         def pick_file_with(pattern: str, needle: str) -> Path | None:
             # Select the specific log that contains the hit, not merely the most
             # recently modified one. On multi-server runs (e.g. DatabaseReplicated)
@@ -1031,8 +1039,18 @@ clickhouse-client --query "SELECT count() FROM test.visits"
                 or pick_latest_file("clickhouse-server*.err.log")
                 or pick_latest_file("clickhouse-server*.log")
             )
-            stderr_log = pick_latest_file("stderr*.log")
-            if not (server_log or stderr_log):
+            # `sanitizer_hits` greps every stderr*.log, so the parser has to see every one
+            # of them, not just the newest: a node that died on a sanitizer report stops
+            # writing and ends up with the OLDEST mtime, exactly as `pick_file_with` notes
+            # above. The matching log is moved to the front so the reported sanitizer name,
+            # stack trace and STID come from it rather than from a healthy node.
+            stderr_logs = pick_all_files("stderr*.log")
+            matched_stderr = pick_file_with("stderr*.log", "anitizer")
+            if matched_stderr:
+                stderr_logs = [matched_stderr] + [
+                    p for p in stderr_logs if p != matched_stderr
+                ]
+            if not (server_log or stderr_logs):
                 results.append(
                     Result.create_from(
                         name="Sanitizer assert or Fatal messages in server logs",
@@ -1050,7 +1068,7 @@ clickhouse-client --query "SELECT count() FROM test.visits"
                     # path "None".
                     log_parser = FuzzerLogParser(
                         server_logs=[server_log] if server_log else None,
-                        stderr_logs=[stderr_log] if stderr_log else None,
+                        stderr_logs=stderr_logs or None,
                     )
                     name, description, files = log_parser.parse_failure()
                     results.append(
