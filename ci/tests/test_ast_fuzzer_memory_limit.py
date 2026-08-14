@@ -39,6 +39,7 @@ past the evidence. The server error text is also matched in either its enum
 on separate lines).
 """
 
+import ast
 import os
 import re
 import tempfile
@@ -52,20 +53,35 @@ def _job_src():
     return open(_JOB, encoding="utf-8").read()
 
 
+def _node_src(src, name):
+    """Verbatim source of one top-level def or assignment, located via the AST.
+
+    Parsing beats text scraping here: cutting a def at the next `def` swallowed
+    the module-level code in between, which may reference names this namespace
+    deliberately does not import (exec'ing snippets exists to skip the job's
+    heavy CI imports), and a `NAME = ` scan to end-of-line truncates any
+    assignment spanning several lines.
+    """
+    for node in ast.parse(src).body:
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return ast.get_source_segment(src, node)
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == name
+            for target in node.targets
+        ):
+            return ast.get_source_segment(src, node)
+    raise KeyError(f"{name} is not defined at module level in {_JOB}")
+
+
+# Named for what the callers below ask for; both resolve one top-level node.
+_def_snippet = _node_src
+_assign_src = _node_src
+
+
 def _scalar(src, name):
-    marker = f"{name} = "
-    start = src.index(marker)
-    end = src.index("\n", start)
     ns = {}
-    exec(src[start:end], ns)  # noqa: S102 - trusted first-party source
+    exec(_node_src(src, name), ns)  # noqa: S102 - trusted first-party source
     return ns[name]
-
-
-def _def_snippet(src, name):
-    marker = f"def {name}("
-    start = src.index(marker)
-    end = src.index("\ndef ", start + 1)
-    return src[start:end]
 
 
 def _load(name):
@@ -77,15 +93,6 @@ def _load(name):
     ns = {}
     exec(_def_snippet(src, name), ns)  # noqa: S102 - trusted first-party source
     return ns[name]
-
-
-def _assign_src(src, name):
-    # Grab a single-line `NAME = ...` assignment verbatim (used for the compiled
-    # regex constants) so the test exercises the exact pattern the job uses.
-    marker = f"{name} = "
-    start = src.index(marker)
-    end = src.index("\n", start)
-    return src[start:end]
 
 
 def _load_terminal_block_helper():
