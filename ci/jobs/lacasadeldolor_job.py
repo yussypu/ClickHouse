@@ -289,6 +289,7 @@ def main():
 
     session_seed = secrets.randbits(64)
     print(f"Using seed {session_seed} for La Casa del Dolor")
+    random.seed(session_seed)
 
     # Set up remote servers configuration for La Casa del Dolor
     number_of_nodes = random.randint(1, 3)
@@ -572,14 +573,11 @@ python3 {repo_dir}/tests/casa_del_dolor/dolor.py --seed={session_seed} --generat
         server_logs.append(log_paths[0])
         stderr_logs.append(log_paths[3])
         fatal_logs.append(workspace_path / f"fatal{i}.log")
-    # Also include the error logs and the rotated/compressed logs so parse_failure() can
-    # find errors that only reached clickhouse-server.err.log, or were rotated out of the
-    # current file (e.g. server0.err.log, server0.log.0.gz, stderr0.log.1.gz). Rotated
-    # stderr matters because dolor.py decides the run failed by grepping stderr.log*, so a
-    # sanitizer report there must not be invisible here. These have to stay behind the
-    # per-node primary logs: analyze_job_logs pairs server_logs[:len(stderr_logs)] with
-    # stderr_logs and fatal_logs by index, so `stderr_logs` keeps exactly one entry per node.
-    rotated_stderr_logs = []
+    # Also scan the error and rotated/compressed logs, so an error that only reached
+    # clickhouse-server.err.log or was rotated away is still found. These must stay behind
+    # the per-node primary logs: analyze_job_logs pairs server_logs with stderr_logs and
+    # fatal_logs by index, so `stderr_logs` keeps exactly one entry per node.
+    rotated_logs = []
     for i in range(number_of_nodes):
         err_log = get_node_workspace_logs(workspace_path, i)[1]
         if err_log.is_file():
@@ -599,9 +597,7 @@ python3 {repo_dir}/tests/casa_del_dolor/dolor.py --seed={session_seed} --generat
             reverse=True,
         )
         server_logs.extend(rotated)
-        rotated_stderr_logs.extend(
-            p for p in rotated if p.name.startswith(f"stderr{i}.log.")
-        )
+        rotated_logs.extend(rotated)
 
     result = analyze_job_logs(
         paths,
@@ -630,13 +626,12 @@ python3 {repo_dir}/tests/casa_del_dolor/dolor.py --seed={session_seed} --generat
                 "Server hit its memory limit (Code 241) but stayed alive",
             )
         )
-        # `_classify_sanitizer_oom` only scans the current per-node logs, on purpose. So a
-        # node whose current stderr.log holds just an OOM marker can downgrade the run to
-        # OK while another node's real sanitizer report sits in a rotated stderr.log.N.gz -
-        # which is exactly what made dolor.py exit non-zero. Re-check the rotated files
-        # here; this can only turn OK into FAIL, never the reverse.
-        if benign_downgrade and rotated_stderr_logs:
-            paths_to_scan = " ".join(str(p) for p in rotated_stderr_logs)
+        # `_classify_sanitizer_oom` only scans the current per-node logs, on purpose, so a
+        # real failure in a rotated one can still be downgraded to OK. dolor.py greps both
+        # `stderr.log*` and `clickhouse-server.log*`, so re-check every rotated file here;
+        # this can only turn OK into FAIL, never the reverse.
+        if benign_downgrade and rotated_logs:
+            paths_to_scan = " ".join(str(p) for p in rotated_logs)
             # `-z` because rotation gzips all but the newest file, and a report in a
             # `.gz` is exactly the one this re-check exists to catch. The second `rg`
             # filters the already-decompressed pipe, so it needs no `-z`.
@@ -644,7 +639,7 @@ python3 {repo_dir}/tests/casa_del_dolor/dolor.py --seed={session_seed} --generat
                 f"rg -z --text '{SANITIZER_NON_OOM_PATTERN}' {paths_to_scan}"
                 f" | rg --text -v '{SANITIZER_OOM_PATTERN}'"
             ):
-                print("Genuine sanitizer report found in a rotated stderr log")
+                print("Genuine failure found in a rotated log")
                 benign_downgrade = False
         if not benign_downgrade:
             Result.create_from(
