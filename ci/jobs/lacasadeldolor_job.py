@@ -567,21 +567,24 @@ python3 {repo_dir}/tests/casa_del_dolor/dolor.py --seed={session_seed} --generat
     # Gather logs to analyze
     server_logs = []
     stderr_logs = []
+    error_logs = []
     fatal_logs = []
     for i in range(number_of_nodes):
         log_paths = get_node_workspace_logs(workspace_path, i)
         server_logs.append(log_paths[0])
+        error_logs.append(log_paths[1])
         stderr_logs.append(log_paths[3])
         fatal_logs.append(workspace_path / f"fatal{i}.log")
     # Also scan the error and rotated/compressed logs, so an error that only reached
     # clickhouse-server.err.log or was rotated away is still found. These must stay behind
     # the per-node primary logs: analyze_job_logs pairs server_logs with stderr_logs and
-    # fatal_logs by index, so `stderr_logs` keeps exactly one entry per node.
+    # fatal_logs by index, so `stderr_logs` keeps exactly one entry per node. Appending an
+    # error log here only lets the log parser read it - `error_logs` is what puts it in
+    # front of the OOM classifier, which sees the per-node slice alone.
     rotated_logs = []
     for i in range(number_of_nodes):
-        err_log = get_node_workspace_logs(workspace_path, i)[1]
-        if err_log.is_file():
-            server_logs.append(err_log)
+        if error_logs[i].is_file():
+            server_logs.append(error_logs[i])
         rotated = sorted(
             [
                 p
@@ -614,6 +617,7 @@ python3 {repo_dir}/tests/casa_del_dolor/dolor.py --seed={session_seed} --generat
         [],
         sw,
         True,
+        error_logs=error_logs,
     )
     if not cmd_ok and result.is_ok():
         # dolor.py exits non-zero on any sanitizer line or unexpected fuzzer exit code,

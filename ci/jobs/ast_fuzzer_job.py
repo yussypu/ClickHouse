@@ -284,6 +284,7 @@ def _classify_sanitizer_oom(
     server_died: bool,
     server_exit_code: int,
     workspace_path: Path,
+    error_logs: list[Path] | None = None,
 ) -> tuple[bool, list[str]]:
     """Decide whether a failed sanitizer run is an OOM (i.e. should pass).
 
@@ -291,23 +292,27 @@ def _classify_sanitizer_oom(
     SIGKILL of the server (exit 137 with no sanitizer report written) is treated
     as OOM, not a bug. It is only downgraded to success when no node log also
     shows a genuine non-OOM failure signal, so a node that hits both an OOM and a
-    real crash still fails. Each node is judged by its server.log AND stderr.log
-    pair: the AST/Buzz runner merges sanitizer output into server.log, but the
-    Dolor cluster does not - there the report lands only in stderr.log.
+    real crash still fails. Each node is judged by its server.log, stderr.log and
+    error log together: the AST/Buzz runner merges sanitizer output into server.log,
+    but the Dolor cluster does not - there the report lands only in stderr.log, while
+    a `<Fatal>` or `Logical error` may reach only clickhouse-server.err.log.
     Returns (is_oom_success, warning_messages).
     """
     oom_pattern = SANITIZER_OOM_PATTERN
     non_oom_pattern = SANITIZER_NON_OOM_PATTERN
     oom_nodes = []
     non_oom_failure_found = False
-    # Only scan primary logs (plus each node's stderr.log). Rotated logs may
-    # contain sanitizer signals from previous restarts that would incorrectly
-    # set non_oom_failure_found and block the OOM-is-success path.
+    # Only scan the current logs of each node (server.log, stderr.log, error log).
+    # Rotated logs may contain sanitizer signals from previous restarts that would
+    # incorrectly set non_oom_failure_found and block the OOM-is-success path; the
+    # error log is current, rotated on server open just like server.log, so a failure
+    # that reached only it belongs to this run and must veto the downgrade.
     for i, server_log in enumerate(primary_server_logs):
         stderr_log = stderr_logs[i] if i < len(stderr_logs) else None
+        error_log = error_logs[i] if error_logs and i < len(error_logs) else None
         node_logs = " ".join(
             str(log)
-            for log in (server_log, stderr_log)
+            for log in (server_log, stderr_log, error_log)
             if log is not None and Path(log).exists()
         )
         if not node_logs:
@@ -363,7 +368,13 @@ def analyze_job_logs(
     extra_results: list[Result],
     sw: Utils.Stopwatch,
     server_fuzzer: bool,
+    error_logs: list[Path] | None = None,
 ) -> Result:
+    """`error_logs`, when given, holds the current clickhouse-server.err.log of each node,
+    in the same per-node order as `stderr_logs`, so the OOM classifier sees a failure that
+    reached only the error log. Callers that merge those into `server_logs` for the parser
+    must still pass them here: only the `server_logs[:len(stderr_logs)]` slice is treated
+    per node, so anything appended past it is invisible to the classifier."""
     # parse runner script exit status
     status = Result.Status.FAIL
     info = []
@@ -463,6 +474,7 @@ def analyze_job_logs(
                 server_died,
                 server_exit_code,
                 WORKSPACE_PATH,
+                error_logs=error_logs,
             )
             if is_oom_success:
                 info.extend(oom_messages)
