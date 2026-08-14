@@ -380,6 +380,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# The watchdog logs this as `<Fatal>` whenever its child is SIGKILLed, which is exactly what
+# `stop_clickhouse(kill=True)` does on the restarts driven by `--kill-server-prob`. Expected
+# here, so the teardown check below skips it - `ClickHouseCluster.shutdown` skips the same
+# line (see `tests/integration/helpers/cluster.py`).
+EXPECTED_KILL_FATAL = "Child process was terminated by signal 9 (KILL)"
+
 # Set seed first
 seed = args.seed
 if seed == 0:
@@ -809,8 +815,18 @@ for server in servers:
     if server.grep_in_log("Logical error:", from_host=True):
         logging.error(f"Logical error in instance '{server.name}'")
         good_exit = False
-    if server.grep_in_log("<Fatal>", from_host=True):
-        logging.error(f"Crash in instance '{server.name}'")
+    # `grep_in_log` reads the rotated logs too, so the expected kill fatals from every
+    # earlier forced restart are still in scope here. Filter them line by line rather than
+    # dropping the whole match: a genuine fatal logged next to one must still fail the run.
+    unexpected_fatals = [
+        line
+        for line in server.grep_in_log("<Fatal>", from_host=True).splitlines()
+        if line.strip() and EXPECTED_KILL_FATAL not in line
+    ]
+    if unexpected_fatals:
+        logging.error(
+            f"Crash in instance '{server.name}':\n" + "\n".join(unexpected_fatals)
+        )
         good_exit = False
     if server.grep_in_log("Sanitizer:", filename="stderr.log", from_host=True):
         logging.error(f"Sanitizer error in instance '{server.name}'")
