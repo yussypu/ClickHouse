@@ -1,7 +1,6 @@
 #include <Interpreters/applyColumnsTransformer.h>
 #include <Analyzer/QueryTreeBuilder.h>
 
-#include <chrono>
 #include <unordered_set>
 
 #include <Common/FieldVisitorToString.h>
