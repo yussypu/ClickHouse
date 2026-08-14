@@ -1355,7 +1355,10 @@ class SharedCatalogPropertiesGroup(PropertiesGroup):
         cluster_name_choices = get_cluster_names(remote_servers)
         if cluster_name_choices and random.randint(1, 100) <= 75:
             if remote_servers is None or remote_servers.find("default") is None:
-                # The default cluster was not removed
+                # The default cluster was not removed. It is missing from this element but
+                # inherited from `programs/server/config.xml`, and Dolor nodes use
+                # `copy_common_configs=False`, so the `<remote_servers remove="remove"/>` of
+                # `0_common_instance_config.xml` never drops it - only a marker written here.
                 cluster_name_choices.append("default")
             shared_settings["cluster_name"] = lambda: random.choice(
                 cluster_name_choices

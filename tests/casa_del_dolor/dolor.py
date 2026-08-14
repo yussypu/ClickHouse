@@ -828,8 +828,14 @@ for server in servers:
             f"Crash in instance '{server.name}':\n" + "\n".join(unexpected_fatals)
         )
         good_exit = False
-    if server.grep_in_log("Sanitizer:", filename="stderr.log", from_host=True):
-        logging.error(f"Sanitizer error in instance '{server.name}'")
-        good_exit = False
+    # `Sanitizer:` alone misses a bare UBSan report, which names no sanitizer on the line.
+    # Plain substrings, not the parser's `RUNTIME_ERROR_PATTERN`: `grep_in_log` hands these
+    # to `zgrep`, whose default BRE would read the `|` alternation as a literal character.
+    for needle in ("Sanitizer:", "runtime error: "):
+        if server.grep_in_log(needle, filename="stderr.log", from_host=True):
+            logging.error(
+                f"Sanitizer error in instance '{server.name}': found '{needle}'"
+            )
+            good_exit = False
 
 sys.exit(0 if good_exit else 1)
