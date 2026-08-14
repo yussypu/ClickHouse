@@ -463,12 +463,12 @@ test_env_variables = set_environment_variables(logger, args, "cluster")
 server_settings = args.server_config
 user_settings = args.user_config
 modified_server_settings = modified_user_settings = False
-generated_clusters = 0
+generated_clusters: list[str] = []
 if server_settings is not None:
     modified_server_settings, server_settings, generated_clusters = (
         modify_server_settings(args, cluster, is_private_binary, server_settings)
     )
-    if generated_clusters > 0:
+    if generated_clusters:
         modified_user_settings, user_settings = modify_user_settings(
             args, user_settings, generated_clusters
         )

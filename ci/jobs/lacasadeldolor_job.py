@@ -359,7 +359,9 @@ def main():
         host.text = f"node{i}"
         port = ET.SubElement(next_replica, "port")
         port.text = "9000"
-    # Add all nodes cluster with 75% probability
+    # Add all nodes cluster with 75% probability. It doesn't follow the `cluster<N>` naming
+    # used above on purpose: `properties.py` reads the cluster names from this configuration
+    # with `get_cluster_names`, so a cluster can be named after what it holds.
     has_all_cluster = random.randint(1, 4) != 1
     if has_all_cluster:
         next_node = ET.SubElement(remote_servers, "allnodes")
@@ -465,7 +467,11 @@ python3 {repo_dir}/tests/casa_del_dolor/dolor.py --seed={session_seed} --generat
                 shutil.copy2(f, artifact)
             if artifact not in paths:
                 paths.append(artifact)
-    # Copy logs from container to host
+    # Copy logs from container to host, the rotated ones (clickhouse-server.log.0.gz,
+    # stderr.log.1.gz, etc.) included: `dolor.py` decides the exit code with
+    # `zgrep ... <log>*`, so the glob at server_logs collection has to see the rotated
+    # files too. Their names are derived from the same two lists as the live copy, so a
+    # log the live copy handles cannot go missing here.
     for i in range(number_of_nodes):
         for cont_log, host_log in zip(
             get_node_container_logs(i), get_node_workspace_logs(workspace_path, i)
@@ -474,25 +480,11 @@ python3 {repo_dir}/tests/casa_del_dolor/dolor.py --seed={session_seed} --generat
                 shutil.copy2(cont_log, host_log)
             else:
                 print(f"WARNING: File {cont_log} already gone!")
-
-    # Copy rotated server logs (clickhouse-server.log.0.gz, etc.) and
-    # rotated error logs (clickhouse-server.err.log.0.gz, etc.) into
-    # workspace_path so the glob at server_logs collection finds them.
-    for i in range(number_of_nodes):
-        container_log_dir = Path(
-            f"{_dolor_instances_dir()}/node{i}/logs"
-        )
-        if not container_log_dir.exists():
-            continue
-        for base, dst_base in (
-            ("clickhouse-server.log", f"server{i}.log"),
-            ("clickhouse-server.err.log", f"server{i}.err.log"),
-        ):
-            for rotated in container_log_dir.glob(f"{base}.*"):
+            for rotated in cont_log.parent.glob(f"{cont_log.name}.*"):
                 if not rotated.is_file():
                     continue
-                suffix = rotated.name[len(base) :]
-                dst = workspace_path / f"{dst_base}{suffix}"
+                suffix = rotated.name[len(cont_log.name) :]
+                dst = workspace_path / f"{host_log.name}{suffix}"
                 shutil.copy2(rotated, dst)
                 paths.append(dst)
 
