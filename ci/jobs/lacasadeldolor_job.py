@@ -18,6 +18,7 @@ from ci.jobs.ast_fuzzer_job import (
 )
 from ci.jobs.buzzhouse_job import generate_buzz_config
 from ci.jobs.scripts.integration_tests_configs import IMAGES_ENV
+from ci.jobs.scripts.log_parser import FuzzerLogParser
 from ci.praktika.info import Info
 from ci.praktika.result import Result
 from ci.praktika.utils import Shell, Utils
@@ -170,6 +171,61 @@ def _copy_node_cores_to_workspace(workspace_path: Path) -> list[Path]:
         except OSError as e:
             print(f"WARNING: failed to copy core dump {src} -> {dst}: {e}")
     return copied
+
+
+def _classify_rotated_logs(
+    rotated_logs: list[Path], sw: Utils.Stopwatch
+) -> tuple[Result | None, bool]:
+    """Classify what only the rotated logs hold, as the current logs are classified.
+
+    `analyze_job_logs` judges the current per-node logs alone, on purpose: a sanitizer
+    signal in a rotated log can belong to a restart that already finished. `dolor.py` sets
+    its exit code from `stderr.log*` and `clickhouse-server.log*` though, so when it fails a
+    run the report may live only in a rotated file, and dropping that on the floor turns
+    both a benign and a genuine report into the same nondescript wrapper error.
+
+    Returns (failure, is_oom_only): a genuine non-OOM report yields the `FuzzerLogParser`
+    verdict for it as a ready-to-report `Result`, a report that is only an OOM yields
+    (None, True) so the caller can pass the run, and no report at all yields (None, False).
+    """
+    if not rotated_logs:
+        return None, False
+    paths_to_scan = " ".join(str(p) for p in rotated_logs)
+    # `-z` because rotation gzips all but the newest file, and a report in a `.gz` is
+    # exactly the one this looks for. The second `rg` filters the already-decompressed
+    # pipe, so it needs no `-z`.
+    if Shell.get_output(
+        f"rg -z --text '{SANITIZER_NON_OOM_PATTERN}' {paths_to_scan}"
+        f" | rg --text -v '{SANITIZER_OOM_PATTERN}'"
+    ):
+        print("Genuine failure found in a rotated log")
+        # Rotated stderr logs are passed as `server_logs`: `parse_failure` searches
+        # `stderr_logs + server_logs` for a sanitizer report either way, and none of these
+        # files is the current log of a node that `stderr_logs` pairs up by index.
+        name, description, files = FuzzerLogParser(
+            server_logs=rotated_logs
+        ).parse_failure()
+        if not name:
+            # Nothing nameable despite the signal - let the caller report its own error.
+            return None, False
+        return (
+            Result.create_from(
+                results=[
+                    Result(
+                        name=name,
+                        info=description,
+                        status=Result.Status.FAIL,
+                        files=files,
+                    )
+                ],
+                info="Failure found only in a rotated log",
+                stopwatch=sw,
+            ),
+            False,
+        )
+    if Shell.get_output(f"rg -z --text '{SANITIZER_OOM_PATTERN}' {paths_to_scan}"):
+        return None, True
+    return None, False
 
 
 def main():
@@ -630,21 +686,20 @@ python3 {repo_dir}/tests/casa_del_dolor/dolor.py --seed={session_seed} --generat
                 "Server hit its memory limit (Code 241) but stayed alive",
             )
         )
-        # `_classify_sanitizer_oom` only scans the current per-node logs, on purpose, so a
-        # real failure in a rotated one can still be downgraded to OK. dolor.py greps both
-        # `stderr.log*` and `clickhouse-server.log*`, so re-check every rotated file here;
-        # this can only turn OK into FAIL, never the reverse.
-        if benign_downgrade and rotated_logs:
-            paths_to_scan = " ".join(str(p) for p in rotated_logs)
-            # `-z` because rotation gzips all but the newest file, and a report in a
-            # `.gz` is exactly the one this re-check exists to catch. The second `rg`
-            # filters the already-decompressed pipe, so it needs no `-z`.
-            if Shell.get_output(
-                f"rg -z --text '{SANITIZER_NON_OOM_PATTERN}' {paths_to_scan}"
-                f" | rg --text -v '{SANITIZER_OOM_PATTERN}'"
-            ):
-                print("Genuine failure found in a rotated log")
-                benign_downgrade = False
+        # Whatever dolor.py failed on may live only in a rotated log, which the verdict
+        # above never looked at. A genuine report there wins over a benign current-log
+        # verdict and is reported by name; one that is only an OOM passes the run the same
+        # way `_classify_sanitizer_oom` passes an OOM in a current log.
+        rotated_failure, rotated_oom_only = _classify_rotated_logs(rotated_logs, sw)
+        if rotated_failure is not None:
+            rotated_failure.complete_job()
+            return
+        if rotated_oom_only and not benign_downgrade:
+            print("Sanitizer OOM found in a rotated log - test considered passed")
+            result.set_info(
+                "WARNING: Sanitizer OOM in a rotated log - test considered passed"
+            )
+            benign_downgrade = True
         if not benign_downgrade:
             Result.create_from(
                 status=Result.Status.FAIL,
