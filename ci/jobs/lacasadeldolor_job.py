@@ -527,6 +527,9 @@ python3 {repo_dir}/tests/casa_del_dolor/dolor.py --seed={session_seed} --generat
             r"|Out of memory: Killed process"
             r"|Server died"
             r"|Received signal (?:SIGSEGV|SIGABRT|SIGKILL|6|9|11)"
+            # A server that vanished with no exec ID logs no exit code at all, so
+            # this is the only evidence it died (dolor.py checks the pid first).
+            r"|is unexpectedly gone with no exec ID"
         )
         # `dolor.py` inspects the ClickHouse exec of every node on shutdown and logs
         # "The server node0 exited with code: 137". Collect those codes so the sanitizer
@@ -554,6 +557,11 @@ python3 {repo_dir}/tests/casa_del_dolor/dolor.py --seed={session_seed} --generat
         return
 
     server_exit_code = collapse_server_exit_code(node_exit_codes)
+    # An abnormal exit code IS the server dying, and a pure kernel OOM logs no message
+    # the patterns above match, so derive the flag rather than string-match for it.
+    # `collapse_server_exit_code` returns 0 for the clean and graceful codes.
+    if server_exit_code != 0:
+        server_died = True
     if node_exit_codes:
         print(f"Server exit codes: {node_exit_codes}, using {server_exit_code}")
 
