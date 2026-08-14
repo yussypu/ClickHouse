@@ -17,6 +17,7 @@ from ci.jobs.ast_fuzzer_job import (
     analyze_job_logs,
 )
 from ci.jobs.buzzhouse_job import generate_buzz_config
+from ci.jobs.scripts.clickhouse_service import ClickHouseService
 from ci.jobs.scripts.integration_tests_configs import IMAGES_ENV
 from ci.jobs.scripts.log_parser import FuzzerLogParser
 from ci.praktika.info import Info
@@ -174,7 +175,7 @@ def _copy_node_cores_to_workspace(workspace_path: Path) -> list[Path]:
 
 
 def _classify_rotated_logs(
-    rotated_logs: list[Path], sw: Utils.Stopwatch
+    rotated_logs: list[Path], fuzzer_out: Path, sw: Utils.Stopwatch
 ) -> tuple[Result | None, bool]:
     """Classify what only the rotated logs hold, as the current logs are classified.
 
@@ -185,8 +186,9 @@ def _classify_rotated_logs(
     both a benign and a genuine report into the same nondescript wrapper error.
 
     Returns (failure, is_oom_only): a genuine non-OOM report yields the `FuzzerLogParser`
-    verdict for it as a ready-to-report `Result`, a report that is only an OOM yields
-    (None, True) so the caller can pass the run, and no report at all yields (None, False).
+    verdict for it as a `Result` still to be given the caller's artifacts, a report that is
+    only an OOM yields (None, True) so the caller can pass the run, and no report at all
+    yields (None, False).
     """
     if not rotated_logs:
         return None, False
@@ -202,8 +204,10 @@ def _classify_rotated_logs(
         # Rotated stderr logs are passed as `server_logs`: `parse_failure` searches
         # `stderr_logs + server_logs` for a sanitizer report either way, and none of these
         # files is the current log of a node that `stderr_logs` pairs up by index.
+        # `fuzzer_out` is what the reproduce commands are built from, so it goes in here
+        # exactly as `analyze_job_logs` passes it for a current-log failure.
         name, description, files = FuzzerLogParser(
-            server_logs=rotated_logs
+            server_logs=rotated_logs, fuzzer_log=fuzzer_out
         ).parse_failure()
         if not name:
             # Nothing nameable despite the signal - let the caller report its own error.
@@ -690,23 +694,32 @@ python3 {repo_dir}/tests/casa_del_dolor/dolor.py --seed={session_seed} --generat
         # above never looked at. A genuine report there wins over a benign current-log
         # verdict and is reported by name; one that is only an OOM passes the run the same
         # way `_classify_sanitizer_oom` passes an OOM in a current log.
-        rotated_failure, rotated_oom_only = _classify_rotated_logs(rotated_logs, sw)
-        if rotated_failure is not None:
-            rotated_failure.complete_job()
-            return
+        failed_result, rotated_oom_only = _classify_rotated_logs(
+            rotated_logs, buzz_out, sw
+        )
         if rotated_oom_only and not benign_downgrade:
             print("Sanitizer OOM found in a rotated log - test considered passed")
             result.set_info(
                 "WARNING: Sanitizer OOM in a rotated log - test considered passed"
             )
             benign_downgrade = True
-        if not benign_downgrade:
-            Result.create_from(
+        if failed_result is None and not benign_downgrade:
+            failed_result = Result.create_from(
                 status=Result.Status.FAIL,
                 info="dolor.py exited with non-zero code but no specific error was identified. Check fuzzer.log.",
-                files=[str(p) for p in paths if p.exists() and p.stat().st_size > 0],
                 stopwatch=sw,
-            ).complete_job()
+            )
+        if failed_result is not None:
+            # `analyze_job_logs` attaches the artifacts only to a failure it reports itself,
+            # and it returned OK here, so repeat that finalization for the failure this
+            # wrapper reports instead: encrypt the cores and attach every non-empty artifact.
+            # Without it the findings this path exists to preserve would go out with a poorer
+            # report than every other failing path.
+            failed_result.set_files(ClickHouseService.collect_cores(workspace_path))
+            for file in paths:
+                if file.exists() and file.stat().st_size > 0:
+                    failed_result.set_files(file)
+            failed_result.complete_job()
             return
 
     result.complete_job()

@@ -1,29 +1,30 @@
 """The `sanitizer_hits` detector must ignore safeExit()'s leak-check-skip notice.
 
 `ClickHouseProc.check_fatal_messages_in_logs` scans the server's stderr for
-sanitizer output: it opens an *open-ended* `sed` range at the first line
-containing `anitizer` and prints everything from there to EOF, then removes a
-closed allow-list of benign lines. Whatever survives `head -n 1` becomes a
+sanitizer output: `rg -z` matches the lines `FuzzerLogParser` can classify
+(`SANITIZER_ERROR_PATTERN` for a report that names a sanitizer,
+`RUNTIME_ERROR_PATTERN` for the bare `runtime error:` UBSan prints), then removes
+a closed allow-list of benign lines. Whatever survives `head -n 1` becomes a
 `BLOCKER` job failure.
 
 `safeExit()` writes `Not running the leak check: other threads are still
 running.` when a forced shutdown skips the LeakSanitizer check. That notice
 records a check that was *skipped*, so it can never itself be a report - but it
-is not sanitizer output either, and once the range is open it survives the
-allow-list and gets blamed as a sanitizer hit.
+is not sanitizer output either, and it used to get blamed as a sanitizer hit:
+the detector opened an *open-ended* `sed` range at the first line containing
+`anitizer` - benignly, at the `__asan_handle_no_return` block's
+`For details see https://github.com/google/sanitizers/issues/189` - and the
+notice then survived the allow-list applied after the range had opened.
 
-The range does open benignly: the `__asan_handle_no_return` block's
-`For details see https://github.com/google/sanitizers/issues/189` line matches
-`anitizer` and is removed only *after* the range has opened.
-
-The arms below drive the real pipeline, extracted from the module's source so
+Matching the parser's patterns instead of a range means the notice is not matched
+at all, so the allow-list is now a safety net rather than the only guard, and
+arms 1, 3 and 4 hold because nothing matches rather than because a filter fired.
+The arms still drive the real pipeline, extracted from the module's source so
 that editing the pipeline breaks this test rather than silently bypassing it.
-Arms 2 and 5b are the ones that matter most: the filter must not swallow a
-genuine report, neither on its own line nor sharing a line with the notice.
-Arm 4 covers the multi-server layout, where `stderr*.log` is several files that
-`sed` concatenates into one stream, so the range can open in one file and blame
-a line in the next. Arm 5 pins the filter to our exact literal, so it cannot
-grow into a blanket silencer.
+Arms 2, 2b and 5 pin what the detector must still blame. Arm 5b is the one that
+stays load-bearing for the filter: a report sharing a line with the notice does
+match, and only a whole-line filter keeps it. Arm 4 covers the multi-server
+layout, where `stderr*.log*` globs to several files.
 
 The notice text itself lives in three places - `safeExit.cpp` writes it, the
 pipeline filters it, and the arms below feed it - and the whole-line match only
@@ -38,6 +39,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PROC_PY = REPO_ROOT / "ci" / "jobs" / "scripts" / "clickhouse_proc.py"
+PARSER_PY = REPO_ROOT / "ci" / "jobs" / "scripts" / "log_parser.py"
 SAFE_EXIT_CPP = REPO_ROOT / "base" / "base" / "safeExit.cpp"
 
 
@@ -75,27 +77,74 @@ ASAN_STACK_SIZE_BLOCK = [
 REAL_REPORT = "==1==ERROR: LeakSanitizer: detected memory leaks"
 
 
-def _extract_sanitizer_hits_pipeline() -> str:
-    """The `sanitizer_hits` shell pipeline, taken from the module's own source.
-
-    Read rather than imported: importing `clickhouse_proc` pulls in the whole
-    praktika stack. The f-string is reassembled from the AST so a paraphrase
-    cannot creep in, and `{self.log_dir}` becomes `${LOG_DIR}`.
-    """
-    tree = ast.parse(PROC_PY.read_text())
+def _single_assignment(tree: ast.Module, name: str) -> ast.expr:
+    """The value assigned to `name`, when the module assigns it exactly once."""
     assigns = [
         node
         for node in ast.walk(tree)
         if isinstance(node, ast.Assign)
         and any(
-            isinstance(target, ast.Name) and target.id == "sanitizer_hits"
+            isinstance(target, ast.Name) and target.id == name
             for target in node.targets
         )
     ]
-    assert (
-        len(assigns) == 1
-    ), f"expected one sanitizer_hits assignment, got {len(assigns)}"
-    call = assigns[0].value
+    assert len(assigns) == 1, f"expected one {name} assignment, got {len(assigns)}"
+    return assigns[0].value
+
+
+def _class_attribute(module_path: Path, class_name: str, attribute: str) -> str:
+    """A string constant defined in a class body, read from source.
+
+    Read rather than imported, for the same reason as the pipeline below.
+    """
+    tree = ast.parse(module_path.read_text())
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef) or node.name != class_name:
+            continue
+        for statement in node.body:
+            if isinstance(statement, ast.Assign) and any(
+                isinstance(target, ast.Name) and target.id == attribute
+                for target in statement.targets
+            ):
+                # Adjacent string literals are one Constant by the time we see them.
+                return ast.literal_eval(statement.value)
+    raise AssertionError(f"{class_name}.{attribute} not found in {module_path}")
+
+
+def _resolve_sanitizer_pattern(tree: ast.Module) -> str:
+    """The trigger regex, reassembled from the `sanitizer_pattern` assignment.
+
+    Its halves live on `FuzzerLogParser` so that the detector fires on exactly what
+    the parser can classify; they are read from `log_parser.py` here rather than
+    copied, because a copy would let the two drift apart - which is the bug this
+    interpolation exists to prevent.
+    """
+    joined = _single_assignment(tree, "sanitizer_pattern")
+    assert isinstance(
+        joined, ast.JoinedStr
+    ), "sanitizer_pattern is no longer an f-string"
+    parts = []
+    for value in joined.values:
+        if isinstance(value, ast.Constant):
+            parts.append(value.value)
+            continue
+        expr = ast.unparse(value.value)
+        attribute = re.fullmatch(r"FuzzerLogParser\.(\w+)", expr)
+        assert attribute, f"unexpected interpolation {expr!r} in sanitizer_pattern"
+        parts.append(_class_attribute(PARSER_PY, "FuzzerLogParser", attribute.group(1)))
+    return "".join(parts)
+
+
+def _extract_sanitizer_hits_pipeline() -> str:
+    """The `sanitizer_hits` shell pipeline, taken from the module's own source.
+
+    Read rather than imported: importing `clickhouse_proc` pulls in the whole
+    praktika stack. The f-string is reassembled from the AST so a paraphrase
+    cannot creep in, `{self.log_dir}` becomes `${LOG_DIR}`, and the trigger regex
+    is resolved to what the parser actually defines.
+    """
+    tree = ast.parse(PROC_PY.read_text())
+    call = _single_assignment(tree, "sanitizer_hits")
     assert isinstance(
         call, ast.Call
     ), "sanitizer_hits is no longer a Shell.get_output() call"
@@ -108,12 +157,14 @@ def _extract_sanitizer_hits_pipeline() -> str:
     for value in joined.values:
         if isinstance(value, ast.Constant):
             parts.append(value.value)
-        else:
-            expr = ast.unparse(value.value)
-            assert (
-                expr == "self.log_dir"
-            ), f"unexpected interpolation {expr!r} in the pipeline"
+            continue
+        expr = ast.unparse(value.value)
+        if expr == "self.log_dir":
             parts.append("${LOG_DIR}")
+        elif expr == "sanitizer_pattern":
+            parts.append(_resolve_sanitizer_pattern(tree))
+        else:
+            raise AssertionError(f"unexpected interpolation {expr!r} in the pipeline")
     return "".join(parts)
 
 
@@ -176,11 +227,10 @@ def test_pipeline_still_reports_a_real_leak(tmp_path):
 def test_pipeline_reports_a_real_leak_the_notice_would_shadow(tmp_path):
     """Arm 2b: a report *after* the notice is blamed, rather than the notice.
 
-    No single process emits this ordering, but the detector globs `stderr*.log`
-    and `sed` runs without `-s`, so several servers' files are one stream (the
-    layout arm 4 covers): server A's notice can precede server B's report.
-    The detector's output is order-sensitive (`head -n 1`), so without the
-    filter the notice would be blamed and the leak hidden behind it.
+    No single process emits this ordering, but the detector globs `stderr*.log*`,
+    so several servers' files are searched as one run (the layout arm 4 covers):
+    server A's notice can precede server B's report. The detector's output is
+    order-sensitive (`head -n 1`), so anything blamed ahead of the report hides it.
     """
     _write(
         tmp_path,
@@ -196,13 +246,14 @@ def test_pipeline_ignores_the_asan_stack_size_block_alone(tmp_path):
 
 
 def test_pipeline_filters_the_skip_notice_across_stderr_files(tmp_path):
-    """Arm 4: multi-server layout - the range opens in one file, the notice is in the next.
+    """Arm 4: multi-server layout - benign block in one file, the notice in the next.
 
-    `stderr*.log` globs to several files on a multi-server run (e.g.
-    DatabaseReplicated) and `sed` runs without `-s`, so the open range carries
-    over from `stderr.log` into `stderr1.log`. `stderr1.log` holds nothing but
-    the notice: any other line there would be blamed first (nothing else the
-    server prints is allow-listed) and would mask what this arm measures.
+    `stderr*.log*` globs to several files on a multi-server run (e.g.
+    DatabaseReplicated), which used to carry the open `sed` range from
+    `stderr.log` into `stderr1.log` and blame the notice there. `stderr1.log`
+    holds nothing but the notice: any other line there would be blamed first
+    (nothing else the server prints is allow-listed) and would mask what this arm
+    measures.
     """
     _write(
         tmp_path,
