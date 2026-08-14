@@ -58,6 +58,12 @@ def test_introspection_port(started_cluster):
     )
     assert introspection_client().query("EXISTS TABLE system.one") == "1\n"
     introspection_client().query("SHOW PROCESSLIST")
+    # `DESCRIBE FILESYSTEM CACHE` is diagnostic, but its AST reports `QueryKind::None`,
+    # so it has to be allowed explicitly. No cache is configured here, so the query is
+    # expected to fail on the missing cache rather than on the introspection-port gate.
+    assert "There is no cache by name" in introspection_client().query_and_get_error(
+        "DESCRIBE FILESYSTEM CACHE 'no_such_cache'"
+    )
 
     node.query("SYSTEM STOP LISTEN CUSTOM 'introspection_native'")
     assert introspection_client().query("SELECT 1") == "1\n"

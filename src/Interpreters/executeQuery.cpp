@@ -77,6 +77,7 @@
 #include <Interpreters/QueryMetadataCache.h>
 #include <Common/ProfileEvents.h>
 #include <Common/ElapsedTimeProfileEventIncrement.h>
+#include <Parsers/ASTDescribeCacheQuery.h>
 #include <Parsers/ASTSystemQuery.h>
 #include <Parsers/stripQuerySettings.h>
 #include <QueryPipeline/printPipeline.h>
@@ -1194,6 +1195,11 @@ using ImplicitTransactionControlExecutorPtr = std::shared_ptr<ImplicitTransactio
 /// torn down, so anything that creates, changes or removes state is rejected there.
 static bool isAllowedOnIntrospectionPort(const IAST & ast)
 {
+    /// `DESCRIBE FILESYSTEM CACHE` is purely diagnostic, but `ASTDescribeCacheQuery` does not
+    /// override `getQueryKind`, so it is not covered by the kinds below.
+    if (ast.as<ASTDescribeCacheQuery>())
+        return true;
+
     switch (ast.getQueryKind())
     {
         case IAST::QueryKind::Select:
