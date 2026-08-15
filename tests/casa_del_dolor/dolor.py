@@ -781,10 +781,11 @@ for server in servers:
     pid = server.get_process_pid("clickhouse")
     if pid is None:
         logger.info(f"The server {server.name} is not running")
-        if not server.clickhouse_exec_id:
-            # No exec ID to inspect — cannot verify clean exit; treat as failure
+        if not server.clickhouse_exec_id and server.clickhouse_last_exit_code is None:
+            # Neither a live exec nor a recorded exit code: nothing says how the
+            # server went away, so it cannot be called a clean exit.
             logging.error(
-                f"Server {server.name} is unexpectedly gone with no exec ID to inspect"
+                f"Server {server.name} is unexpectedly gone with no exit information"
             )
             good_exit = False
     else:
@@ -794,24 +795,38 @@ for server in servers:
                 f"Instance {server.name} is still running after stop command"
             )
             good_exit = False
+    exit_code = None
     if server.clickhouse_exec_id:
         try:
             exec_info = cluster.docker_client.api.exec_inspect(
                 server.clickhouse_exec_id
             )
             exit_code = exec_info["ExitCode"]
-            logging.info(f"The server {server.name} exited with code: {exit_code}")
-            good_exit = good_exit and exit_code in (
-                -9,
-                -15,
-                0,
-                137,
-                143,
-            )  # 137 is SIGKILL, 143 is SIGTERM
         except Exception as ex:
             logging.warning(
                 f"Could not inspect exec for {server.name} - already gone: {ex}"
             )
+    else:
+        # `stop_clickhouse` drops the exec id once the process is gone, but reads the
+        # exit code off it first.
+        exit_code = server.clickhouse_last_exit_code
+    if exit_code is not None:
+        logging.info(f"The server {server.name} exited with code: {exit_code}")
+        good_exit = good_exit and exit_code in (
+            -9,
+            -15,
+            0,
+            137,
+            143,
+        )  # 137 is SIGKILL, 143 is SIGTERM
+    # A SIGKILL exit code is accepted above because the run kills servers on purpose,
+    # so it cannot distinguish a deliberate kill from a shutdown that hung. Only the
+    # escalation flag can, and a final shutdown that had to be forced is a failure.
+    if server.clickhouse_forced_stop:
+        logging.error(
+            f"Server {server.name} did not shut down gracefully and had to be force killed"
+        )
+        good_exit = False
     if server.grep_in_log("Logical error:", from_host=True):
         logging.error(f"Logical error in instance '{server.name}'")
         good_exit = False

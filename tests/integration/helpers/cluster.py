@@ -4275,6 +4275,8 @@ class ClickHouseCluster:
                     self.exec_in_container(
                         instance.docker_id, ["chmod", "+777", "/usr/bin/clickhouse"]
                     )
+                    instance.clickhouse_last_exit_code = None
+                    instance.clickhouse_forced_stop = False
                     instance.clickhouse_exec_id = instance.exec_in_container(
                         ["bash", "-c", instance.clickhouse_start_command],
                         user=str(os.getuid()),
@@ -5105,6 +5107,10 @@ class ClickHouseInstance:
         self.config_root_name = config_root_name
         self.docker_init_flag = use_docker_init_flag
         self.clickhouse_exec_id = ""
+        # Terminal state of the last server exec. `clickhouse_exec_id` is dropped once
+        # the process is gone, so these keep how it went away available to callers.
+        self.clickhouse_last_exit_code = None
+        self.clickhouse_forced_stop = False
 
     def is_built_with_sanitizer(self, sanitizer_name=""):
         build_opts = self.query(
@@ -5450,6 +5456,21 @@ class ClickHouseInstance:
             method=method, url=url, params=params, data=data, headers=headers, *args, **kwargs
         )
 
+    def _capture_clickhouse_exit(self):
+        """Record the exit code of the server exec before its id is dropped.
+
+        `clickhouse_exec_id` is the only handle to the finished exec, so the code has
+        to be read here or it is lost and the caller can no longer tell a clean
+        shutdown from a forced one.
+        """
+        if not self.clickhouse_exec_id:
+            return
+        try:
+            info = self.cluster.docker_client.api.exec_inspect(self.clickhouse_exec_id)
+            self.clickhouse_last_exit_code = info["ExitCode"]
+        except Exception as e:
+            logging.warning(f"Could not inspect exec of {self.name}: {e}")
+
     def stop_clickhouse(self, stop_wait_sec=30, kill=False):
         if not self.stay_alive:
             raise Exception(
@@ -5493,6 +5514,7 @@ class ClickHouseInstance:
             while time.time() <= start_time + stop_wait_sec:
                 pid = self.get_process_pid("clickhouse")
                 if pid is None:
+                    self._capture_clickhouse_exit()
                     self.clickhouse_exec_id = ""  # old exec is no longer valid
                     return True
                 else:
@@ -5515,6 +5537,9 @@ class ClickHouseInstance:
                     ],
                     user="root",
                 )
+                # Escalation only: a caller that asked for kill=True directly wanted a
+                # hard stop, but reaching here means a graceful stop timed out.
+                self.clickhouse_forced_stop = True
                 self.stop_clickhouse(kill=True)
             else:
                 ps_all = self.exec_in_container(
@@ -5549,6 +5574,8 @@ class ClickHouseInstance:
             pid = self.get_process_pid("clickhouse")
             if pid is None:
                 logging.debug("No clickhouse process running. Start new one.")
+                self.clickhouse_last_exit_code = None
+                self.clickhouse_forced_stop = False
                 self.clickhouse_exec_id = exec_id = self.exec_in_container(
                     [
                         "bash",
@@ -5921,6 +5948,8 @@ class ClickHouseInstance:
         )
         # Make sure no ClickHouse exec id is set before starting
         self.clickhouse_exec_id = ""
+        self.clickhouse_last_exit_code = None
+        self.clickhouse_forced_stop = False
         self.clickhouse_exec_id = self.exec_in_container(
             ["bash", "-c", self.clickhouse_start_command_in_daemon],
             user=str(os.getuid()),
@@ -6007,6 +6036,8 @@ class ClickHouseInstance:
             )
         # Make sure no ClickHouse exec id is set before starting
         self.clickhouse_exec_id = ""
+        self.clickhouse_last_exit_code = None
+        self.clickhouse_forced_stop = False
         self.clickhouse_exec_id = self.exec_in_container(
             ["bash", "-c", self.clickhouse_start_command_in_daemon],
             user=str(os.getuid()),
