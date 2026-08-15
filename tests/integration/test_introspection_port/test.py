@@ -1,3 +1,5 @@
+import time
+
 import pytest
 
 from helpers.client import Client
@@ -73,3 +75,15 @@ def test_introspection_port(started_cluster):
     assert introspection_client().query("SELECT 1") == "1\n"
     introspection_client().query("SYSTEM START LISTEN QUERIES ALL")
     assert node.query("SELECT 1") == "1\n"
+
+
+def test_introspection_port_during_shutdown(started_cluster):
+    node.exec_in_container(["bash", "-c", "pkill -15 clickhouse"], user="root")
+
+    for _ in range(100):
+        if "Connection refused" in node.query_and_get_error("SELECT 1"):
+            assert introspection_client().query("SELECT 1") == "1\n"
+            break
+        time.sleep(0.1)
+    else:
+        pytest.fail("The regular TCP port did not stop accepting connections during shutdown")
