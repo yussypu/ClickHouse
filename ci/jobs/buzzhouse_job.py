@@ -295,6 +295,7 @@ def generate_buzz_config(workspace_path: Path, log_path: str | None = None):
             "map_buckets_strategy",
             "map_serialization_version",
             "merge_max_block_size",
+            "merge_use_batch_sorting_queue",
             "min_bytes_for_full_part_storage",
             "min_bytes_for_wide_part",
             "nullable_serialization_version",
