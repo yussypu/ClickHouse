@@ -1,5 +1,5 @@
 {
-  "settings": 358,
+  "settings": 359,
   "anchorRoutes": {
     "adaptive_write_buffer_initial_size": "/reference/settings/merge-tree-settings/other",
     "add_implicit_sign_column_constraint_for_collapsing_engine": "/reference/settings/merge-tree-settings/other",
@@ -171,6 +171,7 @@
     "merge_tree_clear_old_parts_interval_seconds": "/reference/settings/merge-tree-settings/merge-tree",
     "merge_tree_clear_old_temporary_directories_interval_seconds": "/reference/settings/merge-tree-settings/merge-tree",
     "merge_tree_enable_clear_old_broken_detached": "/reference/settings/merge-tree-settings/merge-tree",
+    "merge_use_batch_sorting_queue": "/reference/settings/merge-tree-settings/merge",
     "merge_with_recompression_ttl_timeout": "/reference/settings/merge-tree-settings/merge-with",
     "merge_with_ttl_timeout": "/reference/settings/merge-tree-settings/merge-with",
     "merge_workload": "/reference/settings/merge-tree-settings/merge",

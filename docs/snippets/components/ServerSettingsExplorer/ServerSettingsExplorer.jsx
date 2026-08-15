@@ -164,7 +164,7 @@ const ServerSettingsExplorer = ({ href: baseRoute }) => {
                 <span aria-hidden="true" className="w-4 shrink-0" />
                 {branch(branchPrefix(childContinuations, itemIsLast))}
                 <a
-                    href={`https://clickhouse.com/docs${baseRoute}${item.value.path}`}
+                  href={`https://clickhouse.com/docs${baseRoute}${item.value.path}`}
                   className="min-w-0 whitespace-normal no-underline hover:underline"
                   style={{ overflowWrap: "anywhere" }}
                 >
