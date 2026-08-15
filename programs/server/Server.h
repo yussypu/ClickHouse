@@ -9,6 +9,8 @@
 #include <Server/ServerType.h>
 #include <Poco/Net/HTTPServerParams.h>
 
+#include <unordered_set>
+
 /** Server provides three interfaces:
   * 1. HTTP - simple interface for any applications.
   * 2. TCP - interface for native clickhouse-client and for server to server internal communications.
@@ -75,6 +77,9 @@ private:
     ContextMutablePtr global_context;
     /// Updated/recent config, to compare http_handlers
     ConfigurationPtr latest_config;
+    /// `introspection` is a listener lifecycle property. Keep the startup classification so
+    /// config reloads cannot move a live listener between the regular and introspection pools.
+    std::unordered_set<String> introspection_protocols;
 
     HTTPContextPtr httpContext() const;
 

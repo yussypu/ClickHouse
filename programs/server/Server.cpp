@@ -666,16 +666,6 @@ bool isIntrospectionProtocol(const Poco::Util::AbstractConfiguration & config, c
     return config.getBool("protocols." + protocol + ".introspection", false);
 }
 
-bool hasIntrospectionProtocols(const Poco::Util::AbstractConfiguration & config)
-{
-    Poco::Util::AbstractConfiguration::Keys protocols;
-    config.keys("protocols", protocols);
-    return std::any_of(protocols.begin(), protocols.end(), [&](const auto & protocol)
-    {
-        return isIntrospectionProtocol(config, protocol);
-    });
-}
-
 bool getListenTry(const Poco::Util::AbstractConfiguration & config, const ServerSettings & server_settings)
 {
     bool listen_try = server_settings[ServerSetting::listen_try];
@@ -1586,6 +1576,16 @@ try
     std::vector<ProtocolServerAdapter> servers;
     std::vector<ProtocolServerAdapter> servers_to_start_before_tables;
     std::vector<ProtocolServerAdapter> introspection_servers;
+
+    {
+        Poco::Util::AbstractConfiguration::Keys protocols;
+        config().keys("protocols", protocols);
+        for (const auto & protocol : protocols)
+        {
+            if (isIntrospectionProtocol(config(), protocol))
+                introspection_protocols.insert(protocol);
+        }
+    }
 
     /// Wait for all threads to avoid possible use-after-free (for example logging objects can be already destroyed).
     SCOPE_EXIT_SAFE({
@@ -3419,7 +3419,7 @@ try
 
     /// The introspection servers accept TCP connections while the server is otherwise unreachable:
     /// before attaching and after detaching of tables.
-    if (hasIntrospectionProtocols(config()))
+    if (!introspection_protocols.empty())
     {
         global_context->setStopIntrospectionServersCallback([&]
         {
@@ -3941,7 +3941,7 @@ std::unique_ptr<TCPProtocolStackFactory> Server::buildProtocolStackFromConfig(
     std::string prefix = conf_name + ".";
     std::unordered_set<std::string> pset {conf_name};
 
-    const bool is_introspection = isIntrospectionProtocol(config, protocol);
+    const bool is_introspection = introspection_protocols.contains(protocol);
     std::string innermost_type;
 
     auto stack = std::make_unique<TCPProtocolStackFactory>(*this, conf_name, is_introspection);
@@ -4025,7 +4025,7 @@ void Server::createServers(
 
     for (const auto & protocol : protocols)
     {
-        const bool is_introspection = isIntrospectionProtocol(config, protocol);
+        const bool is_introspection = introspection_protocols.contains(protocol);
         if (is_introspection != only_introspection_protocols)
             continue;
 
