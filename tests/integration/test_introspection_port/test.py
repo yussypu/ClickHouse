@@ -83,6 +83,9 @@ def test_introspection_port_during_shutdown(started_cluster):
     for _ in range(100):
         if "Connection refused" in node.query_and_get_error("SELECT 1"):
             assert introspection_client().query("SELECT 1") == "1\n"
+            assert "QUERY_IS_PROHIBITED" in introspection_client().query_and_get_error(
+                "SYSTEM RELOAD USERS"
+            )
             break
         time.sleep(0.1)
     else:

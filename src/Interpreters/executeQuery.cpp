@@ -1230,11 +1230,11 @@ static void checkQueryIsAllowedOnIntrospectionPort(const IAST & ast, const Conte
     if (system_query
         && (system_query->type == ASTSystemQuery::Type::RELOAD_CONFIG
             || system_query->type == ASTSystemQuery::Type::RELOAD_USERS)
-        && !context.isServerCompletelyStarted())
+        && (!context.isServerCompletelyStarted() || CurrentMetrics::get(CurrentMetrics::IsServerShuttingDown)))
         throw Exception(
             ErrorCodes::QUERY_IS_PROHIBITED,
-            "SYSTEM {} is not allowed on the introspection port until the server is completely started, "
-            "because reloading the configuration may break the initialization order",
+            "SYSTEM {} is not allowed on the introspection port while the server is starting up or shutting down, "
+            "because reloading the configuration may break the server lifecycle",
             ASTSystemQuery::typeToString(system_query->type));
 }
 
