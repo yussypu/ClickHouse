@@ -1797,7 +1797,10 @@ def modify_user_settings(
             cluster_for_parallel_replicas_xml = ET.SubElement(
                 default_xml, "cluster_for_parallel_replicas"
             )
-        cluster_for_parallel_replicas_xml.text = random.choice(cluster_names)
+        # Keep a cluster the caller already pinned (`lacasadeldolor_job.py` sets
+        # `allnodes`), only pick one when it is missing or names a dropped cluster.
+        if (cluster_for_parallel_replicas_xml.text or "").strip() not in cluster_names:
+            cluster_for_parallel_replicas_xml.text = random.choice(cluster_names)
 
     if modified:
         ET.indent(tree, space="    ", level=0)  # indent tree
