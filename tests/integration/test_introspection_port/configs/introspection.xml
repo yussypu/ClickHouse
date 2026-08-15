@@ -4,6 +4,7 @@
             <type>tcp</type>
             <introspection>true</introspection>
             <port>9010</port>
+            <default_database>system</default_database>
         </introspection_native>
     </protocols>
 </clickhouse>

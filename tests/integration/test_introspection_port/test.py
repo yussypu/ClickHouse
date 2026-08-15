@@ -48,6 +48,14 @@ def test_introspection_port(started_cluster):
 
     assert_eq_with_retry(introspection_client(), "SYSTEM RELOAD CONFIG", "")
 
+    node.replace_in_config(
+        "/etc/clickhouse-server/config.d/introspection.xml",
+        "<default_database>system</default_database>",
+        "<default_database>default</default_database>",
+    )
+    node.query("SYSTEM RELOAD CONFIG")
+    assert introspection_client().query("SELECT currentDatabase()") == "system\n"
+
     assert "AUTHENTICATION_FAILED" in introspection_client().query_and_get_error(
         "SELECT 1", password="invalid"
     )

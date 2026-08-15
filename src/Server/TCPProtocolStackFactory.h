@@ -26,6 +26,7 @@ private:
     LoggerPtr log;
     std::string conf_name;
     bool is_introspection;
+    std::optional<std::string> default_database;
     std::vector<TCPServerConnectionFactory::Ptr> stack;
     AllowedClientHosts allowed_client_hosts;
 
@@ -42,6 +43,9 @@ public:
         : server(server_), log(getLogger("TCPProtocolStackFactory")), conf_name(conf_name_), is_introspection(is_introspection_), stack({factory...})
     {
         const auto & config = server.config();
+        if (is_introspection)
+            default_database = config.getString(conf_name + ".default_database", "");
+
         /// Fill list of allowed hosts.
         const auto networks_config = conf_name + ".networks";
         if (config.has(networks_config))
@@ -71,7 +75,7 @@ public:
         try
         {
             LOG_TRACE(log, "TCP Request. Address: {}", socket.peerAddress().toString());
-            return new TCPProtocolStackHandler(server, tcp_server, socket, stack, conf_name, is_introspection);
+            return new TCPProtocolStackHandler(server, tcp_server, socket, stack, conf_name, is_introspection, default_database);
         }
         catch (const Poco::Net::NetException &)
         {
